@@ -1,5 +1,7 @@
 import { logEvent } from 'src/services/analytics/index.js'
+import { isVerbooMode } from 'src/constants/oauth.js'
 import { openBrowser } from '../../utils/browser.js'
+import { getOrCreateVerbooInstallationId } from '../../utils/verbooInstallation.js'
 import { AuthCodeListener } from './auth-code-listener.js'
 import * as client from './client.js'
 import * as crypto from './crypto.js'
@@ -55,6 +57,10 @@ export class OAuthService {
     const codeChallenge = await crypto.generateCodeChallenge(this.codeVerifier)
     const state = crypto.generateState()
 
+    const installationId = isVerbooMode()
+      ? getOrCreateVerbooInstallationId()
+      : undefined
+
     // Build auth URLs for both automatic and manual flows
     const opts = {
       codeChallenge,
@@ -65,6 +71,7 @@ export class OAuthService {
       orgUUID: options?.orgUUID,
       loginHint: options?.loginHint,
       loginMethod: options?.loginMethod,
+      installationId,
     }
     const manualFlowUrl = client.buildAuthUrl({ ...opts, isManual: true })
     const automaticFlowUrl = client.buildAuthUrl({ ...opts, isManual: false })
@@ -98,6 +105,7 @@ export class OAuthService {
         this.port!,
         !isAutomaticFlow, // Pass isManual=true if it's NOT automatic flow
         options?.expiresIn,
+        installationId,
       )
 
       // Fetch profile info (subscription type and rate limit tier) for the

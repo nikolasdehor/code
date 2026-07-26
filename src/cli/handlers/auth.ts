@@ -47,6 +47,7 @@ import { logError } from '../../utils/log.js'
 import { getAPIProvider } from '../../utils/model/providers.js'
 import { getInitialSettings } from '../../utils/settings/settings.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
+import { getOrCreateVerbooInstallationId } from '../../utils/verbooInstallation.js'
 import {
   buildAccountProperties,
   buildAPIProviderProperties,
@@ -226,7 +227,12 @@ export async function authLogin({
     try {
       logEvent('tengu_login_from_refresh_token', {})
 
-      const tokens = await refreshOAuthToken(envRefreshToken, { scopes })
+		const tokens = await refreshOAuthToken(envRefreshToken, {
+			scopes,
+			installationId: isVerbooMode()
+				? getOrCreateVerbooInstallationId()
+				: undefined,
+		})
       await installOAuthTokens(tokens)
 
       const orgResult = await validateForceLoginOrg()

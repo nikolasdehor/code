@@ -54,6 +54,7 @@ export function buildAuthUrl({
   orgUUID,
   loginHint,
   loginMethod,
+	installationId,
 }: {
   codeChallenge: string
   state: string
@@ -64,6 +65,7 @@ export function buildAuthUrl({
   orgUUID?: string
   loginHint?: string
   loginMethod?: string
+	installationId?: string
 }): string {
   const authUrlBase = loginWithClaudeAi
     ? getOauthConfig().CLAUDE_AI_AUTHORIZE_URL
@@ -81,6 +83,10 @@ export function buildAuthUrl({
   authUrl.searchParams.append('code_challenge', codeChallenge)
   authUrl.searchParams.append('code_challenge_method', 'S256')
   authUrl.searchParams.append('state', state)
+
+  if (installationId) {
+    authUrl.searchParams.append('installation_id', installationId)
+  }
 
   // Add orgUUID as URL param if provided
   if (orgUUID) {
@@ -111,14 +117,16 @@ export async function exchangeCodeForTokens(
   port: number,
   _useManualRedirect: boolean = false,
   expiresIn?: number,
+  installationId?: string,
 ): Promise<OAuthTokenExchangeResponse> {
-  const requestBody: Record<string, string | number> = {
+  const requestBody: Record<string, string | number | undefined> = {
     grant_type: 'authorization_code',
     code: authorizationCode,
     redirect_uri: getOAuthRedirectUri(port),
     client_id: getOauthConfig().CLIENT_ID,
     code_verifier: codeVerifier,
     state,
+	installation_id: installationId,
   }
 
   if (expiresIn !== undefined) {
@@ -178,12 +186,13 @@ async function postOAuthForm(
 
 export async function refreshOAuthToken(
   refreshToken: string,
-  { scopes: requestedScopes }: { scopes?: string[] } = {},
+  { scopes: requestedScopes, installationId }: { scopes?: string[]; installationId?: string } = {},
 ): Promise<OAuthTokens> {
   const requestBody = {
     grant_type: 'refresh_token',
     refresh_token: refreshToken,
     client_id: getOauthConfig().CLIENT_ID,
+	installation_id: installationId,
     // Request specific scopes, defaulting to the full Claude AI set. The
     // backend's refresh-token grant allows scope expansion beyond what the
     // initial authorize granted (see ALLOWED_SCOPE_EXPANSIONS), so this is

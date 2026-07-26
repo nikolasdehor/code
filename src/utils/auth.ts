@@ -82,6 +82,7 @@ import {
 import { sleep } from './sleep.js'
 import { jsonParse } from './slowOperations.js'
 import { clearToolSchemaCache } from './toolSchemaCache.js'
+import { getOrCreateVerbooInstallationId } from './verbooInstallation.js'
 
 /** Default TTL for API key helper cache in milliseconds (5 minutes) */
 const DEFAULT_API_KEY_HELPER_TTL = 5 * 60 * 1000
@@ -1687,6 +1688,9 @@ async function checkAndRefreshOAuthTokenIfNeededImpl(
       scopes: shouldUseClaudeAIAuth(lockedTokens.scopes)
         ? undefined
         : lockedTokens.scopes,
+      installationId: isVerbooMode()
+        ? getOrCreateVerbooInstallationId()
+        : undefined,
     })
     const persisted = await persistRefreshedOAuthTokens(refreshedTokens)
     if (!persisted) {
