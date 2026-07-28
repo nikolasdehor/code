@@ -59,6 +59,7 @@ describe('watchdog.ts deterministic behavioral tests', () => {
   beforeEach(() => {
     logs = []
     state = createWatchdogState(100_000)
+    tickWaitingWatchdog(state, baseTasks, 0, mockLog, 100_000)
   })
 
   test('no heartbeat or stall when elapsed < WAITING_HEARTBEAT_MS', () => {
@@ -157,5 +158,41 @@ describe('watchdog.ts deterministic behavioral tests', () => {
     // Always returns purely informational action ('stall', 'heartbeat', 'none')
     // never returns a command to abort/kill or mutate task status.
     expect(['none', 'heartbeat', 'stall']).toContain(res.action)
+  })
+
+  test('first tick initializes lastProgressMs to prevent false stall when waiting_for_agents starts late', () => {
+    // Create state at time 100_000
+    const state = createWatchdogState(100_000)
+    logs = []
+
+    // First tick happens much later (100s after state creation)
+    // Without the fix, elapsed would be 100_000ms → false stall
+    // With the fix, lastProgressMs is set to nowMs on first tick
+    const result = tickWaitingWatchdog(
+      state,
+      baseTasks,
+      0,
+      mockLog,
+      200_000,
+    )
+
+    // Should NOT stall because first tick resets lastProgressMs
+    expect(result.action).not.toBe('stall')
+    expect(state.lastProgressMs).toBe(200_000)
+  })
+
+  test('empty task list initializes only once', () => {
+    const state = createWatchdogState(100_000)
+    tickWaitingWatchdog(state, [], 0, mockLog, 200_000)
+
+    const result = tickWaitingWatchdog(
+      state,
+      [],
+      0,
+      mockLog,
+      200_000 + WAITING_STALL_TIMEOUT_MS,
+    )
+
+    expect(result.action).toBe('stall')
   })
 })

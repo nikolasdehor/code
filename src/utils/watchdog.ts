@@ -5,6 +5,7 @@ export interface TaskProgressItem {
 }
 
 export interface WatchdogState {
+  initialized: boolean
   lastProgressMs: number
   lastHeartbeatLogMs: number
   loggedStall: boolean
@@ -17,6 +18,7 @@ export const WAITING_STALL_TIMEOUT_MS = 180_000
 
 export function createWatchdogState(nowMs: number = Date.now()): WatchdogState {
   return {
+    initialized: false,
     lastProgressMs: nowMs,
     lastHeartbeatLogMs: 0,
     loggedStall: false,
@@ -53,11 +55,17 @@ export function tickWaitingWatchdog(
 ): WatchdogTickResult {
   const currentSnapshot = computeTaskSnapshot(tasks)
 
-  const isInitialRun = state.prevTaskSnapshot === '' && state.prevSdkEventCount === 0
+  const isInitialRun = !state.initialized
 
   if (isInitialRun) {
+    state.initialized = true
     state.prevTaskSnapshot = currentSnapshot
     state.prevSdkEventCount = sdkEventCount
+    // Initialize lastProgressMs on first tick so elapsed time starts
+    // from when waiting_for_agents actually begins, not from when the
+    // state was created. Prevents false stall when waiting_for_agents
+    // starts late (H4 fix).
+    state.lastProgressMs = nowMs
   } else {
     const snapshotChanged = currentSnapshot !== state.prevTaskSnapshot
     const sdkEventsArrived = sdkEventCount !== state.prevSdkEventCount

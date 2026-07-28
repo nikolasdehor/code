@@ -6165,7 +6165,26 @@ test('emits reasoning_effort from codex alias default when no override is passed
 // ---------------------------------------------------------------------------
 // H1: thinking block close before premature stream close
 // ---------------------------------------------------------------------------
-test('yields content_block_stop(thinking) before premature-close error (H1)', async () => {
+test.each([
+  ['thinking', { reasoning_content: 'thinking...' }],
+  ['text', { content: 'partial answer' }],
+  [
+    'tool_use',
+    {
+      tool_calls: [
+        {
+          index: 0,
+          id: 'call_1',
+          type: 'function',
+          function: { name: 'Read', arguments: '{"file_path":' },
+        },
+      ],
+    },
+  ],
+])('closes %s block before premature-close error (H1)', async (
+  expectedBlockType,
+  delta,
+) => {
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
   process.env.OPENAI_BASE_URL = 'http://example.test/v1'
   process.env.OPENAI_API_KEY = 'test-key'
@@ -6176,10 +6195,8 @@ test('yields content_block_stop(thinking) before premature-close error (H1)', as
   const lines: string[] = [
     // message_start
     `data: ${JSON.stringify({ id: 'msg1', object: 'chat.completion.chunk', model: 'deepseek-reasoner', choices: [], usage: { prompt_tokens: 1, completion_tokens: 0, total_tokens: 1 } })}\n\n`,
-    // thinking block start
-    `data: ${JSON.stringify({ id: 'msg1', object: 'chat.completion.chunk', model: 'deepseek-reasoner', choices: [{ index: 0, delta: { reasoning_content: 'thinking...' }, finish_reason: null }] })}\n\n`,
-    // thinking delta
-    `data: ${JSON.stringify({ id: 'msg1', object: 'chat.completion.chunk', model: 'deepseek-reasoner', choices: [{ index: 0, delta: { reasoning_content: 'more thinking' }, finish_reason: null }] })}\n\n`,
+    // active content block
+    `data: ${JSON.stringify({ id: 'msg1', object: 'chat.completion.chunk', model: 'deepseek-reasoner', choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`,
     // Stream closes WITHOUT finish_reason and WITHOUT [DONE]
   ]
 
@@ -6223,29 +6240,46 @@ test('yields content_block_stop(thinking) before premature-close error (H1)', as
   expect(thrown).toBeInstanceOf(Error)
   expect((thrown as Error).message).toMatch(/without finish_reason/)
 
-  // Before the throw, the thinking block must have been closed
-  const thinkingStops = events.filter(
-    (e) => e.type === 'content_block_stop' && (e as { index?: unknown }).index === 0,
-  )
-  expect(thinkingStops.length).toBe(1)
-
-  // content_block_start(thinking) must have been emitted
-  const thinkingStarts = events.filter(
+  const blockStarts = events.filter(
     (e) =>
       e.type === 'content_block_start' &&
-      (e as { content_block?: { type: string } })?.content_block?.type === 'thinking',
+      (e as { content_block?: { type?: string } }).content_block?.type ===
+        expectedBlockType,
   )
-  expect(thinkingStarts.length).toBe(1)
+  expect(blockStarts).toHaveLength(1)
+
+  const blockStops = events.filter(
+    (e) => e.type === 'content_block_stop' && (e as { index?: unknown }).index === 0,
+  )
+  expect(blockStops).toHaveLength(1)
 
   // No message_stop — premature close is a transport error, not a clean stop
-  const messageStops = events.filter((e) => e.type === 'message_stop')
-  expect(messageStops.length).toBe(0)
+  expect(events.filter((e) => e.type === 'message_stop')).toHaveLength(0)
 })
 
 // ---------------------------------------------------------------------------
-// H3: thinking close + message_stop before in-stream APIError
+// H3: close active content without terminating an errored stream
 // ---------------------------------------------------------------------------
-test('yields content_block_stop(thinking) and idempotent message_stop before in-stream error (H3)', async () => {
+test.each([
+  ['thinking', { reasoning_content: 'thinking deeply...' }],
+  ['text', { content: 'partial answer' }],
+  [
+    'tool_use',
+    {
+      tool_calls: [
+        {
+          index: 0,
+          id: 'call_1',
+          type: 'function',
+          function: { name: 'Read', arguments: '{"file_path":' },
+        },
+      ],
+    },
+  ],
+])('closes %s block without message_stop before in-stream error (H3)', async (
+  expectedBlockType,
+  delta,
+) => {
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
   process.env.OPENAI_BASE_URL = 'http://example.test/v1'
   process.env.OPENAI_API_KEY = 'test-key'
@@ -6256,8 +6290,8 @@ test('yields content_block_stop(thinking) and idempotent message_stop before in-
   const lines: string[] = [
     // message_start
     `data: ${JSON.stringify({ id: 'msg3', object: 'chat.completion.chunk', model: 'deepseek-reasoner', choices: [], usage: { prompt_tokens: 1, completion_tokens: 0, total_tokens: 1 } })}\n\n`,
-    // thinking block delta
-    `data: ${JSON.stringify({ id: 'msg3', object: 'chat.completion.chunk', model: 'deepseek-reasoner', choices: [{ index: 0, delta: { reasoning_content: 'thinking deeply...' }, finish_reason: null }] })}\n\n`,
+    // active content block
+    `data: ${JSON.stringify({ id: 'msg3', object: 'chat.completion.chunk', model: 'deepseek-reasoner', choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`,
     // In-stream error (gateway/proxy style)
     `data: ${JSON.stringify({ error: { message: 'Upstream provider timeout', type: 'proxy_error', code: 'upstream_timeout' } })}\n\n`,
   ]
@@ -6301,24 +6335,18 @@ test('yields content_block_stop(thinking) and idempotent message_stop before in-
   // The generator MUST throw (in-stream error)
   expect(thrown).toBeInstanceOf(Error)
 
-  // content_block_stop(thinking) must have been yielded before the error
-  const thinkingStops = events.filter(
+  const blockStarts = events.filter(
+    (e) =>
+      e.type === 'content_block_start' &&
+      (e as { content_block?: { type?: string } }).content_block?.type ===
+        expectedBlockType,
+  )
+  expect(blockStarts).toHaveLength(1)
+
+  const blockStops = events.filter(
     (e) => e.type === 'content_block_stop' && (e as { index?: unknown }).index === 0,
   )
-  expect(thinkingStops.length).toBe(1)
+  expect(blockStops).toHaveLength(1)
 
-  // message_stop must have been yielded before the error (at most once)
-  const messageStops = events.filter((e) => e.type === 'message_stop')
-  expect(messageStops.length).toBe(1)
-
-  // Order: content_block_stop → message_stop (both before the throw)
-  const cbsIdx = events.findIndex(
-    (e) => e.type === 'content_block_stop' && (e as { index?: unknown }).index === 0,
-  )
-  const msIdx = events.findIndex((e) => e.type === 'message_stop')
-  expect(cbsIdx).toBeGreaterThanOrEqual(0)
-  expect(msIdx).toBeGreaterThan(cbsIdx)
-
-  // message_stop must be the last yielded event
-  expect(msIdx).toBe(events.length - 1)
+  expect(events.filter((e) => e.type === 'message_stop')).toHaveLength(0)
 })
