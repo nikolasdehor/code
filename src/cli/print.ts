@@ -16,6 +16,11 @@ import {
 } from 'src/commands.js'
 import { createStreamlinedTransformer } from 'src/utils/streamlinedTransform.js'
 import { installStreamJsonStdoutGuard } from 'src/utils/streamJsonStdoutGuard.js'
+import {
+  createWatchdogState,
+  tickWaitingWatchdog,
+  type TaskProgressItem,
+} from 'src/utils/watchdog.js'
 import type { ToolPermissionContext } from 'src/Tool.js'
 import type { ThinkingConfig } from 'src/utils/thinking.js'
 import { assembleToolPool, filterToolsByDenyRules } from 'src/tools.js'
@@ -1920,6 +1925,8 @@ function runHeadlessStreaming(
     try {
       let command: QueuedCommand | undefined
       let waitingForAgents = false
+      let waitingSdkEventCount = 0
+      let watchdogState = createWatchdogState()
 
       // Extract command processing into a named function for the do-while pattern.
       // Drains the queue, batching consecutive prompt-mode commands into one
@@ -2366,6 +2373,7 @@ function runHeadlessStreaming(
         // Drain SDK events (task_started, task_progress) before command queue
         // so progress events precede task_notification on the stream.
         for (const event of drainSdkEvents()) {
+          waitingSdkEventCount++
           output.enqueue(event)
         }
 
@@ -2391,7 +2399,20 @@ function runHeadlessStreaming(
             waitingForAgents = true
             if (!hasMainThreadQueued) {
               runPhase = 'waiting_for_agents'
-              // No commands ready yet, wait for tasks to complete
+              const runningBgTasks = getRunningTasks(state)
+                .filter(t => isBackgroundTask(t) && t.type !== 'in_process_teammate')
+                .map((t): TaskProgressItem => ({
+                  id: t.id,
+                  type: t.type,
+                  outputOffset: t.outputOffset,
+                }))
+
+              tickWaitingWatchdog(
+                watchdogState,
+                runningBgTasks,
+                waitingSdkEventCount,
+                logForDiagnosticsNoPII,
+              )
               await sleep(100)
             }
             // Loop back to drain any newly queued commands

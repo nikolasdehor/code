@@ -1074,6 +1074,7 @@ async function* openaiStreamToAnthropic(
   let hasEmittedContentStart = false
   let hasEmittedThinkingStart = false
   let hasClosedThinking = false
+  let didEmitMessageStop = false
   const thinkFilter = createThinkTagFilter()
   let lastStopReason: 'tool_use' | 'max_tokens' | 'end_turn' | null = null
   let hasEmittedFinalUsage = false
@@ -1207,6 +1208,11 @@ async function* openaiStreamToAnthropic(
             }),
             { level: 'error' },
           )
+          // Close thinking block if open before throwing so consumers
+          // see a clean content event sequence (H1 fix).
+          if (hasEmittedThinkingStart && !hasClosedThinking) {
+            yield { type: 'content_block_stop', index: contentBlockIndex }
+          }
           throw new Error(
             `Upstream stream closed without finish_reason after ${elapsedSec}s — likely a guard_proxy/vLLM disconnect. The session was interrupted, not completed.`,
           )
@@ -1259,6 +1265,18 @@ async function* openaiStreamToAnthropic(
             typeof inStreamError.message === 'string'
               ? inStreamError.message
               : 'Provider returned an in-stream error'
+          // Close thinking block if open before error, so the TUI
+          // sees a clean content event sequence (H3 thinking fix).
+          if (hasEmittedThinkingStart && !hasClosedThinking) {
+            yield { type: 'content_block_stop', index: contentBlockIndex }
+          }
+          // Yield an idempotent message_stop so downstream consumers
+          // reset stream state (e.g. TUI spinner) before the error
+          // propagates (H3 message_stop fix).
+          if (!didEmitMessageStop) {
+            didEmitMessageStop = true
+            yield { type: 'message_stop' }
+          }
           const errorPayload = {
             error: {
               message,
