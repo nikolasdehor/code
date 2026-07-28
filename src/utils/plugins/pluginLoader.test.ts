@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'fs/promises'
+import { access, mkdtemp, mkdir, rm, symlink, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join, resolve } from 'path'
 import { afterEach, describe, expect, test } from 'bun:test'
@@ -7,9 +7,13 @@ import { setInlinePlugins } from '../../bootstrap/state.js'
 import type { LoadedPlugin } from '../../types/plugin.js'
 import {
   clearPluginCache,
+  cloneWithUrlFallback,
   createPluginFromPath,
+  getGitHubCloneUrls,
+  getGitTransportOverrideArgs,
   mergePluginSources,
   resolveExistingPluginComponentPath,
+  resolveGitSubdirUrls,
   resolvePluginComponentPath,
 } from './pluginLoader.js'
 import { clearPluginSkillsCache, getPluginSkills } from './loadPluginCommands.js'
@@ -84,6 +88,104 @@ describe('mergePluginSources', () => {
       source: legacy.source,
       plugin: legacy.name,
     })
+  })
+})
+
+describe('GitHub clone transport fallback', () => {
+  test('prefers HTTPS locally and uses HTTPS only in remote environments', () => {
+    expect(getGitHubCloneUrls('owner/repository', false)).toEqual([
+      'https://github.com/owner/repository.git',
+      'git@github.com:owner/repository.git',
+    ])
+    expect(getGitHubCloneUrls('owner/repository', true)).toEqual([
+      'https://github.com/owner/repository.git',
+    ])
+  })
+
+  test('preserves explicit git-subdir URLs while expanding GitHub shorthand', () => {
+    expect(resolveGitSubdirUrls('owner/repository', false)).toEqual([
+      'https://github.com/owner/repository.git',
+      'git@github.com:owner/repository.git',
+    ])
+    expect(
+      resolveGitSubdirUrls('git@github.com:owner/repository.git', false),
+    ).toEqual(['git@github.com:owner/repository.git'])
+    expect(
+      resolveGitSubdirUrls(
+        'https://github.com/owner/repository.git',
+        false,
+      ),
+    ).toEqual(['https://github.com/owner/repository.git'])
+  })
+
+  test('pins only implicit GitHub HTTPS URLs against global insteadOf rewrites', () => {
+    const httpsUrl = 'https://github.com/owner/repository.git'
+    expect(getGitTransportOverrideArgs(httpsUrl, true)).toEqual([
+      '-c',
+      `url.${httpsUrl}.insteadOf=${httpsUrl}`,
+    ])
+    expect(getGitTransportOverrideArgs(httpsUrl, false)).toEqual([])
+    expect(
+      getGitTransportOverrideArgs(
+        'git@github.com:owner/repository.git',
+        true,
+      ),
+    ).toEqual([])
+  })
+
+  test('cleans a partial HTTPS clone before retrying with SSH', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'plugin-clone-fallback-'))
+    const targetPath = join(tempRoot, 'plugin')
+    const urls = getGitHubCloneUrls('owner/repository', false)
+    const attempts: string[] = []
+
+    try {
+      const selectedUrl = await cloneWithUrlFallback(
+        urls,
+        targetPath,
+        async gitUrl => {
+          attempts.push(gitUrl)
+          if (gitUrl.startsWith('https://')) {
+            await mkdir(targetPath, { recursive: true })
+            await writeFile(join(targetPath, 'partial-clone'), '')
+            throw new Error('HTTPS authentication failed')
+          }
+
+          await expect(access(targetPath)).rejects.toThrow()
+          await mkdir(targetPath, { recursive: true })
+        },
+      )
+
+      expect(selectedUrl).toBe('git@github.com:owner/repository.git')
+      expect(attempts).toEqual(urls)
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  test('reports both transport failures and removes the final partial clone', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'plugin-clone-failure-'))
+    const targetPath = join(tempRoot, 'plugin')
+    const urls = getGitHubCloneUrls('owner/repository', false)
+
+    try {
+      await expect(
+        cloneWithUrlFallback(urls, targetPath, async gitUrl => {
+          await mkdir(targetPath, { recursive: true })
+          throw new Error(
+            gitUrl.startsWith('https://')
+              ? 'repository not found'
+              : 'Permission denied (publickey)',
+          )
+        }),
+      ).rejects.toThrow(
+        'Failed to clone repository using all available transports',
+      )
+
+      await expect(access(targetPath)).rejects.toThrow()
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true })
+    }
   })
 })
 

@@ -525,22 +525,122 @@ export async function installFromNpm(
 }
 
 /**
- * Clone a git repository (exported for testing)
+ * Try clone URLs in order, removing any partial clone before the next attempt.
  *
- * @param gitUrl - The git URL to clone
- * @param targetPath - Where to clone the repository
- * @param ref - Optional branch or tag to checkout
- * @param sha - Optional specific commit SHA to checkout
+ * Explicit git URLs pass a single candidate and preserve their original error.
+ * Implicit GitHub sources pass HTTPS followed by SSH and receive a combined
+ * error when neither transport works.
  */
-export async function gitClone(
+export async function cloneWithUrlFallback(
+  gitUrls: string[],
+  targetPath: string,
+  attemptClone: (gitUrl: string) => Promise<void>,
+): Promise<string> {
+  if (gitUrls.length === 0) {
+    throw new Error('No git clone URLs were provided')
+  }
+
+  const failures: Array<{ gitUrl: string; error: unknown }> = []
+
+  for (let index = 0; index < gitUrls.length; index++) {
+    const gitUrl = gitUrls[index]!
+    try {
+      await attemptClone(gitUrl)
+      return gitUrl
+    } catch (error) {
+      failures.push({ gitUrl, error })
+      await rm(targetPath, { recursive: true, force: true })
+
+      const nextUrl = gitUrls[index + 1]
+      if (nextUrl) {
+        logForDebugging(
+          `Plugin clone failed via ${formatGitTransport(gitUrl)}, retrying via ${formatGitTransport(nextUrl)}`,
+          { level: 'info' },
+        )
+      }
+    }
+  }
+
+  if (failures.length === 1) {
+    throw failures[0]!.error
+  }
+
+  const details = failures
+    .map(
+      ({ gitUrl, error }) =>
+        `${formatGitTransport(gitUrl)}: ${errorMessage(error)}`,
+    )
+    .join('\n\n')
+  throw new Error(
+    `Failed to clone repository using all available transports:\n\n${details}`,
+  )
+}
+
+function formatGitTransport(gitUrl: string): 'HTTPS' | 'SSH' {
+  return gitUrl.startsWith('git@') ? 'SSH' : 'HTTPS'
+}
+
+const GITHUB_REPO_PATTERN = /^[a-zA-Z0-9-_.]+\/[a-zA-Z0-9-_.]+$/
+
+/**
+ * Resolve an implicit GitHub owner/repo source to transport candidates.
+ * Public/local installs prefer HTTPS and retain SSH as a private-repo
+ * fallback. Remote environments never try SSH because keys are unavailable.
+ */
+export function getGitHubCloneUrls(
+  repo: string,
+  isRemote = isEnvTruthy(process.env.CLAUDE_CODE_REMOTE),
+): string[] {
+  if (!GITHUB_REPO_PATTERN.test(repo)) {
+    throw new Error(
+      `Invalid GitHub repository format: ${repo}. Expected format: owner/repo`,
+    )
+  }
+
+  const httpsUrl = `https://github.com/${repo}.git`
+  return isRemote ? [httpsUrl] : [httpsUrl, `git@github.com:${repo}.git`]
+}
+
+/**
+ * Pin an implicit HTTPS candidate to itself for this git invocation.
+ *
+ * A user's global `url.*.insteadOf` may rewrite every GitHub HTTPS URL to SSH.
+ * The full-repository match below is more specific than a host-level rule, so
+ * implicit public plugin installs remain HTTPS without changing global config
+ * or disabling credential helpers. Explicit URLs never receive this override.
+ */
+export function getGitTransportOverrideArgs(
   gitUrl: string,
+  enforceImplicitTransport: boolean,
+): string[] {
+  if (
+    !enforceImplicitTransport ||
+    !gitUrl.startsWith('https://github.com/')
+  ) {
+    return []
+  }
+  return ['-c', `url.${gitUrl}.insteadOf=${gitUrl}`]
+}
+
+/**
+ * Clone a git repository from one or more transport candidates.
+ *
+ * The fallback applies only to the initial clone. Once a transport succeeds,
+ * SHA fetch and checkout continue on that clone without retrying unrelated
+ * ref/SHA failures through another protocol.
+ */
+async function gitCloneFromUrls(
+  gitUrls: string[],
   targetPath: string,
   ref?: string,
   sha?: string,
-): Promise<void> {
+  enforceImplicitTransport = false,
+): Promise<string> {
+  const validatedUrls = gitUrls.map(validateGitUrl)
+
   // Use --recurse-submodules to initialize submodules
   // Always start with shallow clone for efficiency
-  const args = [
+  const baseArgs = [
     'clone',
     '--depth',
     '1',
@@ -550,38 +650,62 @@ export async function gitClone(
 
   // Add --branch flag for specific ref (works for both branches and tags)
   if (ref) {
-    args.push('--branch', ref)
+    baseArgs.push('--branch', ref)
   }
 
   // If sha is specified, use --no-checkout since we'll checkout the SHA separately
   if (sha) {
-    args.push('--no-checkout')
+    baseArgs.push('--no-checkout')
   }
 
-  args.push(gitUrl, targetPath)
+  let cloneStarted = performance.now()
+  const gitUrl = await cloneWithUrlFallback(
+    validatedUrls,
+    targetPath,
+    async candidateUrl => {
+      cloneStarted = performance.now()
+      const cloneResult = await execFileNoThrow(
+        gitExe(),
+        [
+          ...getGitTransportOverrideArgs(
+            candidateUrl,
+            enforceImplicitTransport,
+          ),
+          ...baseArgs,
+          candidateUrl,
+          targetPath,
+        ],
+        {
+          env: buildGitChildEnv(),
+        },
+      )
 
-  const cloneStarted = performance.now()
-  const cloneResult = await execFileNoThrow(gitExe(), args, {
-    env: buildGitChildEnv(),
-  })
-
-  if (cloneResult.code !== 0) {
-    logPluginFetch(
-      'plugin_clone',
-      gitUrl,
-      'failure',
-      performance.now() - cloneStarted,
-      classifyFetchError(cloneResult.stderr),
-    )
-    throw new Error(`Failed to clone repository: ${cloneResult.stderr}`)
-  }
+      if (cloneResult.code !== 0) {
+        logPluginFetch(
+          'plugin_clone',
+          candidateUrl,
+          'failure',
+          performance.now() - cloneStarted,
+          classifyFetchError(cloneResult.stderr),
+        )
+        throw new Error(`Failed to clone repository: ${cloneResult.stderr}`)
+      }
+    },
+  )
 
   // If sha is specified, fetch and checkout that specific commit
   if (sha) {
     // Try shallow fetch of the specific SHA first (most efficient)
     const shallowFetchResult = await execFileNoThrowWithCwd(
       gitExe(),
-      ['fetch', '--depth', '1', 'origin', sha],
+      [
+        ...getGitTransportOverrideArgs(gitUrl, enforceImplicitTransport),
+        'fetch',
+        '--depth',
+        '1',
+        'origin',
+        sha,
+      ],
       { cwd: targetPath, env: buildGitChildEnv() },
     )
 
@@ -593,7 +717,11 @@ export async function gitClone(
       )
       const unshallowResult = await execFileNoThrowWithCwd(
         gitExe(),
-        ['fetch', '--unshallow'],
+        [
+          ...getGitTransportOverrideArgs(gitUrl, enforceImplicitTransport),
+          'fetch',
+          '--unshallow',
+        ],
         { cwd: targetPath, env: buildGitChildEnv() },
       )
 
@@ -640,6 +768,24 @@ export async function gitClone(
     'success',
     performance.now() - cloneStarted,
   )
+  return gitUrl
+}
+
+/**
+ * Clone a git repository (exported for testing)
+ *
+ * @param gitUrl - The git URL to clone
+ * @param targetPath - Where to clone the repository
+ * @param ref - Optional branch or tag to checkout
+ * @param sha - Optional specific commit SHA to checkout
+ */
+export async function gitClone(
+  gitUrl: string,
+  targetPath: string,
+  ref?: string,
+  sha?: string,
+): Promise<void> {
+  await gitCloneFromUrls([gitUrl], targetPath, ref, sha)
 }
 
 /**
@@ -668,31 +814,32 @@ async function installFromGitHub(
   ref?: string,
   sha?: string,
 ): Promise<void> {
-  if (!/^[a-zA-Z0-9-_.]+\/[a-zA-Z0-9-_.]+$/.test(repo)) {
-    throw new Error(
-      `Invalid GitHub repository format: ${repo}. Expected format: owner/repo`,
-    )
-  }
-  // Use HTTPS for CCR (no SSH keys), SSH for normal CLI
-  const gitUrl = isEnvTruthy(process.env.CLAUDE_CODE_REMOTE)
-    ? `https://github.com/${repo}.git`
-    : `git@github.com:${repo}.git`
-  return installFromGit(gitUrl, targetPath, ref, sha)
+  const gitUrl = await gitCloneFromUrls(
+    getGitHubCloneUrls(repo),
+    targetPath,
+    ref,
+    sha,
+    true,
+  )
+  const refMessage = ref ? ` (ref: ${ref})` : ''
+  logForDebugging(
+    `Cloned repository from ${gitUrl}${refMessage} to ${targetPath}`,
+  )
 }
 
 /**
- * Resolve a git-subdir `url` field to a clonable git URL.
- * Accepts GitHub owner/repo shorthand (converted to ssh or https depending on
- * CLAUDE_CODE_REMOTE) or any URL that passes validateGitUrl (https, http,
- * file, git@ ssh).
+ * Resolve a git-subdir `url` field to one or more clonable git URLs.
+ * GitHub owner/repo shorthand uses HTTPS with local SSH fallback. Explicit
+ * URLs remain authoritative and are never rewritten.
  */
-function resolveGitSubdirUrl(url: string): string {
-  if (/^[a-zA-Z0-9-_.]+\/[a-zA-Z0-9-_.]+$/.test(url)) {
-    return isEnvTruthy(process.env.CLAUDE_CODE_REMOTE)
-      ? `https://github.com/${url}.git`
-      : `git@github.com:${url}.git`
+export function resolveGitSubdirUrls(
+  url: string,
+  isRemote = isEnvTruthy(process.env.CLAUDE_CODE_REMOTE),
+): string[] {
+  if (GITHUB_REPO_PATTERN.test(url)) {
+    return getGitHubCloneUrls(url, isRemote)
   }
-  return validateGitUrl(url)
+  return [validateGitUrl(url)]
 }
 
 /**
@@ -732,11 +879,12 @@ export async function installFromGitSubdir(
     )
   }
 
-  const gitUrl = resolveGitSubdirUrl(url)
+  const isImplicitGitHubSource = GITHUB_REPO_PATTERN.test(url)
+  const gitUrls = resolveGitSubdirUrls(url)
   // Clone into a sibling temp dir (same filesystem → rename works, no EXDEV).
   const cloneDir = `${targetPath}.clone`
 
-  const cloneArgs = [
+  const baseCloneArgs = [
     'clone',
     '--depth',
     '1',
@@ -744,18 +892,34 @@ export async function installFromGitSubdir(
     '--no-checkout',
   ]
   if (ref) {
-    cloneArgs.push('--branch', ref)
+    baseCloneArgs.push('--branch', ref)
   }
-  cloneArgs.push(gitUrl, cloneDir)
-
-  const cloneResult = await execFileNoThrow(gitExe(), cloneArgs, {
-    env: buildGitChildEnv(),
-  })
-  if (cloneResult.code !== 0) {
-    throw new Error(
-      `Failed to clone repository for git-subdir source: ${cloneResult.stderr}`,
-    )
-  }
+  const gitUrl = await cloneWithUrlFallback(
+    gitUrls,
+    cloneDir,
+    async candidateUrl => {
+      const cloneResult = await execFileNoThrow(
+        gitExe(),
+        [
+          ...getGitTransportOverrideArgs(
+            candidateUrl,
+            isImplicitGitHubSource,
+          ),
+          ...baseCloneArgs,
+          candidateUrl,
+          cloneDir,
+        ],
+        {
+          env: buildGitChildEnv(),
+        },
+      )
+      if (cloneResult.code !== 0) {
+        throw new Error(
+          `Failed to clone repository for git-subdir source: ${cloneResult.stderr}`,
+        )
+      }
+    },
+  )
 
   try {
     const sparseResult = await execFileNoThrowWithCwd(
@@ -779,7 +943,14 @@ export async function installFromGitSubdir(
     if (sha) {
       const fetchSha = await execFileNoThrowWithCwd(
         gitExe(),
-        ['fetch', '--depth', '1', 'origin', sha],
+        [
+          ...getGitTransportOverrideArgs(gitUrl, isImplicitGitHubSource),
+          'fetch',
+          '--depth',
+          '1',
+          'origin',
+          sha,
+        ],
         { cwd: cloneDir, env: buildGitChildEnv() },
       )
       if (fetchSha.code !== 0) {
@@ -788,7 +959,11 @@ export async function installFromGitSubdir(
         )
         const unshallow = await execFileNoThrowWithCwd(
           gitExe(),
-          ['fetch', '--unshallow'],
+          [
+            ...getGitTransportOverrideArgs(gitUrl, isImplicitGitHubSource),
+            'fetch',
+            '--unshallow',
+          ],
           { cwd: cloneDir, env: buildGitChildEnv() },
         )
         if (unshallow.code !== 0) {
@@ -797,7 +972,11 @@ export async function installFromGitSubdir(
       }
       const checkout = await execFileNoThrowWithCwd(
         gitExe(),
-        ['checkout', sha],
+        [
+          ...getGitTransportOverrideArgs(gitUrl, isImplicitGitHubSource),
+          'checkout',
+          sha,
+        ],
         { cwd: cloneDir, env: buildGitChildEnv() },
       )
       if (checkout.code !== 0) {
@@ -811,10 +990,18 @@ export async function installFromGitSubdir(
       // purely read-only ref lookup (no index lock), so it runs safely in
       // parallel with checkout and we avoid waiting on the network for it.
       const [checkout, revParse] = await Promise.all([
-        execFileNoThrowWithCwd(gitExe(), ['checkout', 'HEAD'], {
-          cwd: cloneDir,
-          env: buildGitChildEnv(),
-        }),
+        execFileNoThrowWithCwd(
+          gitExe(),
+          [
+            ...getGitTransportOverrideArgs(gitUrl, isImplicitGitHubSource),
+            'checkout',
+            'HEAD',
+          ],
+          {
+            cwd: cloneDir,
+            env: buildGitChildEnv(),
+          },
+        ),
         execFileNoThrowWithCwd(gitExe(), ['rev-parse', 'HEAD'], {
           cwd: cloneDir,
           env: buildGitChildEnv(),
