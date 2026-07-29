@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -23,17 +23,15 @@ async function importHookChainsModule(options?: {
 
   const allowRemoteSessions = options?.allowRemoteSessions ?? true
 
-  mock.module('../services/analytics/index.js', () => ({
-    logEvent: () => {},
-  }))
+  // Spy on real modules instead of mock.module to preserve transitive exports
+  const analytics = await import('../services/analytics/index.js')
+  spyOn(analytics, 'logEvent').mockImplementation(() => {})
 
-  mock.module('./telemetry/events.js', () => ({
-    logOTelEvent: async () => {},
-  }))
+  const telemetry = await import('./telemetry/events.js')
+  spyOn(telemetry, 'logOTelEvent').mockImplementation(async () => {})
 
-  mock.module('../services/policyLimits/index.js', () => ({
-    isPolicyAllowed: () => allowRemoteSessions,
-  }))
+  const policyLimits = await import('../services/policyLimits/index.js')
+  spyOn(policyLimits, 'isPolicyAllowed').mockImplementation(() => allowRemoteSessions)
 
   return import(`./hookChains.js?test=${Date.now()}-${Math.random()}`)
 }

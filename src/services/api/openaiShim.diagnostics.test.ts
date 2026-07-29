@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, expect, mock, test } from 'bun:test'
+import { afterEach, beforeEach, expect, mock, spyOn, test } from 'bun:test'
 import { acquireSharedMutationLock, releaseSharedMutationLock } from '../../test/sharedMutationLock.js'
+import * as debugModule from '../../utils/debug.js'
 
 const originalFetch = globalThis.fetch
 const originalEnv = {
@@ -33,10 +34,7 @@ afterEach(() => {
 })
 
 test('logs classified transport diagnostics with category and code', async () => {
-  const debugSpy = mock(() => {})
-  mock.module('../../utils/debug.js', () => ({
-    logForDebugging: debugSpy,
-  }))
+  const debugSpy = spyOn(debugModule, 'logForDebugging').mockImplementation(() => {})
 
   const nonce = `${Date.now()}-${Math.random()}`
   const { createOpenAIShimClient } = await import(`./openaiShim.ts?ts=${nonce}`)
@@ -80,10 +78,7 @@ test('logs classified transport diagnostics with category and code', async () =>
 })
 
 test('redacts credentials in transport diagnostic URL logs', async () => {
-  const debugSpy = mock(() => {})
-  mock.module('../../utils/debug.js', () => ({
-    logForDebugging: debugSpy,
-  }))
+  const debugSpy = spyOn(debugModule, 'logForDebugging').mockImplementation(() => {})
 
   const nonce = `${Date.now()}-${Math.random()}`
   const { createOpenAIShimClient } = await import(`./openaiShim.ts?ts=${nonce}`)
@@ -127,10 +122,7 @@ test('redacts credentials in transport diagnostic URL logs', async () => {
   expect(logLine).not.toContain('supersecret@')
 })
 test('logs self-heal localhost fallback with redacted from/to URLs', async () => {
-  const debugSpy = mock(() => {})
-  mock.module('../../utils/debug.js', () => ({
-    logForDebugging: debugSpy,
-  }))
+  const debugSpy = spyOn(debugModule, 'logForDebugging').mockImplementation(() => {})
 
   const nonce = `${Date.now()}-${Math.random()}`
   const { createOpenAIShimClient } = await import(`./openaiShim.ts?ts=${nonce}`)
@@ -204,10 +196,7 @@ test('logs self-heal localhost fallback with redacted from/to URLs', async () =>
 })
 
 test('logs self-heal toolless retry for local tool-call incompatibility', async () => {
-  const debugSpy = mock(() => {})
-  mock.module('../../utils/debug.js', () => ({
-    logForDebugging: debugSpy,
-  }))
+  const debugSpy = spyOn(debugModule, 'logForDebugging').mockImplementation(() => {})
 
   const nonce = `${Date.now()}-${Math.random()}`
   const { createOpenAIShimClient } = await import(`./openaiShim.ts?ts=${nonce}`)

@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test'
+import * as providersModule from '../../utils/model/providers.js'
 import { APIError } from '@anthropic-ai/sdk'
 import { acquireSharedMutationLock, releaseSharedMutationLock } from '../../test/sharedMutationLock.js'
 
@@ -60,10 +61,10 @@ async function importFreshWithRetryModule(
     | 'foundry' = 'firstParty',
 ) {
   mock.restore()
-  mock.module('src/utils/model/providers.js', () => ({
-    getAPIProvider: () => provider,
-    getAPIProviderForStatsig: () => provider,
-  }))
+  spyOn(providersModule, 'getAPIProvider').mockImplementation(() => provider)
+  spyOn(providersModule, 'getAPIProviderForStatsig').mockImplementation(
+    () => provider as ReturnType<typeof providersModule.getAPIProviderForStatsig>,
+  )
   return import(`./withRetry.js?ts=${Date.now()}-${Math.random()}`)
 }
 

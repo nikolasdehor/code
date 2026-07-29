@@ -1,5 +1,5 @@
 import { beforeEach, expect, mock, test } from 'bun:test'
-import { getEmptyToolPermissionContext } from './Tool.js'
+import type { ToolPermissionContext } from './Tool.js'
 
 let lspConnected = false
 
@@ -8,6 +8,7 @@ mock.module('./services/lsp/manager.js', () => ({
   getLspServerManager: () => undefined,
   isLspConnected: () => lspConnected,
   reinitializeLspServerManager: () => {},
+  shutdownLspServerManager: async () => {},
   waitForInitialization: async () => {},
 }))
 
@@ -22,7 +23,14 @@ test('LSPTool is part of the base tool pool', () => {
 })
 
 test('LSPTool is filtered from usable tools until a server is connected', () => {
-  const permissionContext = getEmptyToolPermissionContext()
+  const permissionContext: ToolPermissionContext = {
+    mode: 'default',
+    additionalWorkingDirectories: new Map(),
+    alwaysAllowRules: {},
+    alwaysDenyRules: {},
+    alwaysAskRules: {},
+    isBypassPermissionsModeAvailable: false,
+  }
 
   expect(getTools(permissionContext).map(tool => tool.name)).not.toContain('LSP')
 

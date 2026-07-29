@@ -108,15 +108,25 @@ export function getClaudeSkillScope(
   const absolutePath = expandPath(filePath)
   const absolutePathLower = normalizeCaseForComparison(absolutePath)
 
+  const defaultConfigHome = join(homedir(), '.verboo').normalize('NFC')
+  const isDefaultConfigHome = getClaudeConfigHomeDir() === defaultConfigHome
+
   const bases = [
     {
       dir: expandPath(join(getOriginalCwd(), '.verboo', 'skills')),
       prefix: '/.verboo/skills/',
     },
-    {
-      dir: expandPath(join(getClaudeConfigHomeDir(), 'skills')),
-      prefix: '~/.verboo/skills/',
-    },
+    // Só emite regra com prefixo ~/.verboo/skills/ quando VERBOO_CONFIG_DIR
+    // é o diretório padrão. Config dir customizado (ex.: env var apontando
+    // para outro path) não deve gerar regra fixa — o prefixo não bateria.
+    ...(isDefaultConfigHome
+      ? [
+          {
+            dir: expandPath(join(getClaudeConfigHomeDir(), 'skills')),
+            prefix: '~/.verboo/skills/',
+          },
+        ]
+      : []),
     {
       dir: expandPath(join(homedir(), '.claude', 'skills')),
       prefix: '~/.claude/skills/',

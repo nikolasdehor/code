@@ -369,10 +369,12 @@ export async function getLatestVersion(
       logForDebugging(
         `Tag 'stable' indisponível; caindo para 'latest' como fallback`,
       )
-      const fallback = await execFileNoThrowWithCwd(
-        'npm',
-        ['view', `${MACRO.PACKAGE_URL}@latest`, 'version', '--prefer-online'],
-        { abortSignal: AbortSignal.timeout(5000), cwd: homedir() },
+      const fallback = await withTimeoutSignal(5000, abortSignal =>
+        execFileNoThrowWithCwd(
+          'npm',
+          ['view', `${MACRO.PACKAGE_URL}@latest`, 'version', '--prefer-online'],
+          { abortSignal, cwd: homedir() },
+        ),
       )
       if (fallback.code === 0) {
         return fallback.stdout.trim()
