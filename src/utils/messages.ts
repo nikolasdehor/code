@@ -2997,6 +2997,12 @@ export function handleMessageFromStream(
           streamingEndedAt: Date.now(),
         }))
       }
+      // API error messages arrive as complete Message objects (not
+      // stream_event). Reset the TUI spinner so it doesn't stay in
+      // 'thinking' mode when the stream aborts mid-thinking (H3).
+      if (isSyntheticApiErrorMessage(message)) {
+        onSetStreamMode('tool-use')
+      }
     }
     // Clear streaming text NOW so the render can switch displayedMessages
     // from deferredMessages to messages in the same batch, making the

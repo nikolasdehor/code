@@ -1207,6 +1207,18 @@ async function* openaiStreamToAnthropic(
             }),
             { level: 'error' },
           )
+          // Close any active block before throwing so consumers
+          // see a clean content event sequence (H1 fix).
+          if (hasEmittedContentStart) {
+            yield* closeActiveContentBlock()
+          }
+          if (hasEmittedThinkingStart && !hasClosedThinking) {
+            yield { type: 'content_block_stop', index: contentBlockIndex }
+          }
+          for (const [, toolCall] of activeToolCalls) {
+            yield { type: 'content_block_stop', index: toolCall.index }
+          }
+          activeToolCalls.clear()
           throw new Error(
             `Upstream stream closed without finish_reason after ${elapsedSec}s — likely a guard_proxy/vLLM disconnect. The session was interrupted, not completed.`,
           )
@@ -1259,6 +1271,22 @@ async function* openaiStreamToAnthropic(
             typeof inStreamError.message === 'string'
               ? inStreamError.message
               : 'Provider returned an in-stream error'
+          // Close any open content block before error so consumers
+          // see a clean content event sequence (H3 fix).
+          if (hasEmittedContentStart) {
+            yield* closeActiveContentBlock()
+          }
+          if (hasEmittedThinkingStart && !hasClosedThinking) {
+            yield { type: 'content_block_stop', index: contentBlockIndex }
+          }
+          for (const [, toolCall] of activeToolCalls) {
+            yield { type: 'content_block_stop', index: toolCall.index }
+          }
+          activeToolCalls.clear()
+          // Do NOT yield message_stop here — the synthetic API error
+          // message (createAssistantAPIErrorMessage) is responsible for
+          // resetting the TUI spinner. Yielding message_stop before the
+          // throw would terminate the stream state prematurely.
           const errorPayload = {
             error: {
               message,
