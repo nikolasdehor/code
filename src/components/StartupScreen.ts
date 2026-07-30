@@ -77,6 +77,32 @@ const LOGO_VERBOO_CODE = [
   `    \u2570\u2500\u2500\u2500\u256f  \u2570\u2500\u2500\u2500\u2500\u2500\u2500\u256f\u2570\u2500\u256f  \u2570\u2500\u256f\u2570\u2500\u2500\u2500\u2500\u2500\u256f  \u2570\u2500\u2500\u2500\u2500\u2500\u256f  \u2570\u2500\u2500\u2500\u2500\u2500\u256f     \u2570\u2500\u2500\u2500\u2500\u2500\u256f \u2570\u2500\u2500\u2500\u2500\u2500\u256f \u2570\u2500\u2500\u2500\u2500\u2500\u256f \u2570\u2500\u2500\u2500\u2500\u2500\u2500\u256f`,
 ]
 
+// ─── Verboo ASCII Logo ────────────────────────────────────────────────────────
+
+const VERBOO_LOGO = [
+  `  ▄▀▀▀▀▀▀▀▄  `,
+  `▄▀▀▀▀▀▀▀▀▀▀▀▄`,
+  `▀▀▀ ▀▀▀▀▀ ▀▀▀`,
+  `▀▀▀▀▀▀▀▀▀▀▀▀▀`,
+  `▀▀▀▀▀▄▄▄▀▀▀▀▀`,
+  ` ▀▀▀▀▀▀▀▀▀▀▀ `,
+  `▄▀▀ ▀▀▀▀▀ ▀▀▄`,
+]
+
+// Máscara 1:1 com VERBOO_LOGO — 1 = bg roxo (bloco cheio), 0 = fg só (meio-bloco)
+// Edite os 1/0 para escolher quais caracteres ficam totalmente preenchidos
+const VERBOO_LOGO_MASK = [
+  `  011111110  `,
+  `0111111111110`,
+  `1110111110111`,
+  `1111011101111`,
+  `1111100011111`,
+  ` 11111111111 `,
+  `110 01110 011`,
+]
+
+const STARTUP_LOGO_MIN_COLUMNS = 80
+
 // ─── Provider detection ───────────────────────────────────────────────────────
 
 function resolveVerbooStartupModel(modelOverride?: string): string {
@@ -214,14 +240,106 @@ function boxRow(content: string, width: number, rawLen: number): string {
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
+function truncateStartupText(text: string, maxLength: number): string {
+  if (maxLength <= 0) return ''
+  if (text.length <= maxLength) return text
+  if (maxLength === 1) return '\u2026'
+  return `${text.slice(0, maxLength - 1)}\u2026`
+}
+
+export function renderStartupScreen(
+  p: ReturnType<typeof detectProvider>,
+  version: string,
+  displayCwd: string,
+  columns: number,
+): string {
+  const out: string[] = []
+  const bold = `${ESC}1m`
+  const PURPLE = rgb(...ACCENT)
+  const PURPLE_FILL = `${rgb(...ACCENT)}${ESC}48;2;${ACCENT[0]};${ACCENT[1]};${ACCENT[2]}m`
+  const SOFT = rgb(...CREAM)
+  const DIMP = `${DIM}${rgb(...DIMCOL)}`
+  const STATUS_C = p.isLocal ? rgb(130, 200, 140) : PURPLE
+  const statusLabel = p.isLocal ? 'local' : 'cloud'
+  const LOGO_TEXT_PADDING = 2
+
+  out.push('')
+
+  if (columns < STARTUP_LOGO_MIN_COLUMNS) {
+    const compactTextWidth = Math.max(1, columns - 6)
+    const provider = truncateStartupText(`${p.name} \u00b7 ${p.model}`, compactTextWidth)
+    const endpoint = truncateStartupText(p.baseUrl, compactTextWidth)
+    const cwd = truncateStartupText(displayCwd, compactTextWidth)
+
+    out.push(`  ${PURPLE}\ud83d\udc7b${RESET}  ${bold}${SOFT}Verboo Code${RESET} ${DIMP}v${version}${RESET}`)
+    out.push(`      ${DIMP}Tokens ilimitados \u00b7 Privacidade \u00b7 Velocidade${RESET}`)
+    out.push(`      ${DIMP}${provider}${RESET}`)
+    out.push(`      ${DIMP}${endpoint}${RESET}`)
+    out.push(`      ${DIMP}${cwd}${RESET}`)
+  } else {
+    const maxLogoWidth = Math.max(...VERBOO_LOGO.map(line => line.trimEnd().length))
+    const rightTextWidth = Math.max(
+      1,
+      columns - 2 - maxLogoWidth - LOGO_TEXT_PADDING,
+    )
+    const provider = truncateStartupText(`${p.name} \u00b7 ${p.model}`, rightTextWidth)
+    const endpoint = truncateStartupText(p.baseUrl, rightTextWidth)
+    const cwd = truncateStartupText(displayCwd, rightTextWidth)
+    const rightCol = [
+      ``,
+      `${bold}${SOFT}Verboo Code${RESET} ${DIMP}v${version}${RESET}`,
+      `${DIMP}Tokens ilimitados \u00b7 Privacidade \u00b7 Velocidade${RESET}`,
+      `${DIMP}${provider}${RESET}`,
+      `${DIMP}${endpoint}${RESET}`,
+      `${DIMP}${cwd}${RESET}`,
+      ``,
+    ]
+
+    const paintedLogo: { text: string; visualWidth: number }[] = []
+    for (let i = 0; i < VERBOO_LOGO.length; i++) {
+      const line = (VERBOO_LOGO[i] ?? '').trimEnd()
+      const mask = VERBOO_LOGO_MASK[i] ?? ''
+      let painted = ''
+      for (let j = 0; j < line.length; j++) {
+        const ch = line[j] ?? ''
+        const isBlock = ch === '\u2580' || ch === '\u2584'
+        if (isBlock && mask[j] === '1') {
+          painted += `${PURPLE_FILL}${ch}${RESET}`
+        } else if (isBlock) {
+          painted += `${PURPLE}${ch}${RESET}`
+        } else {
+          painted += ch
+        }
+      }
+      paintedLogo.push({ text: painted, visualWidth: line.length })
+    }
+
+    for (let i = 0; i < paintedLogo.length; i++) {
+      const { text, visualWidth } = paintedLogo[i] ?? {
+        text: '',
+        visualWidth: 0,
+      }
+      const gap = ' '.repeat(
+        Math.max(0, maxLogoWidth - visualWidth + LOGO_TEXT_PADDING),
+      )
+      out.push(`  ${text}${gap}${rightCol[i] ?? ''}`)
+    }
+  }
+
+  out.push('')
+  out.push(`  ${STATUS_C}\u25cf${RESET}  ${DIMP}${statusLabel}${RESET}    ${DIMP}Ready \u2014 type ${RESET}${PURPLE}/help${RESET}${DIMP} to begin${RESET}`)
+  out.push('')
+
+  return `${out.join('\n')}\n`
+}
+
 // VERBOO-BRAND: compact rounded header (replaces giant ASCII splash).
-// Layout inspired by the V2 logo style \u2014 fantasma + name + meta on the right.
+// Layout inspired by the V2 logo style \u2014 logo + name + meta on the right.
 export function printStartupScreen(modelOverride?: string): void {
   // Skip in non-interactive / CI / print mode
   if (process.env.CI || !process.stdout.isTTY) return
 
   const p = detectProvider(modelOverride)
-  const out: string[] = []
 
   // Resolve cwd to a tilde-shortened display path
   const home = process.env.HOME || process.env.USERPROFILE || ''
@@ -229,23 +347,6 @@ export function printStartupScreen(modelOverride?: string): void {
   const displayCwd = home && cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd
 
   const version = MACRO.DISPLAY_VERSION ?? MACRO.VERSION
-  const bold = `${ESC}1m`
-  const PURPLE = rgb(...ACCENT)
-  const SOFT = rgb(...CREAM)
-  const DIMP = `${DIM}${rgb(...DIMCOL)}`
-  const STATUS_C = p.isLocal ? rgb(130, 200, 140) : PURPLE
-  const statusLabel = p.isLocal ? 'local' : 'cloud'
-  const ep = p.baseUrl.length > 48 ? p.baseUrl.slice(0, 45) + '...' : p.baseUrl
-
-  out.push('')
-  out.push(`  ${PURPLE}\ud83d\udc7b${RESET}  ${bold}${SOFT}Verboo Code${RESET} ${DIMP}v${version}${RESET}`)
-  out.push(`      ${DIMP}Tokens ilimitados \u00b7 Privacidade \u00b7 Velocidade${RESET}`)
-  out.push(`      ${DIMP}${p.name} \u00b7 ${p.model}${RESET}`)
-  out.push(`      ${DIMP}${ep}${RESET}`)
-  out.push(`      ${DIMP}${displayCwd}${RESET}`)
-  out.push('')
-  out.push(`  ${STATUS_C}\u25cf${RESET}  ${DIMP}${statusLabel}${RESET}    ${DIMP}Ready \u2014 type ${RESET}${PURPLE}/help${RESET}${DIMP} to begin${RESET}`)
-  out.push('')
-
-  process.stdout.write(out.join('\n') + '\n')
+  const columns = process.stdout.columns ?? STARTUP_LOGO_MIN_COLUMNS
+  process.stdout.write(renderStartupScreen(p, version, displayCwd, columns))
 }
