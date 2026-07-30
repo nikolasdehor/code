@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   smoke-and-tests:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
 
     steps:
       - name: Check out repository
@@ -60,7 +60,7 @@ jobs:
         run: npm run test:provider-recommendation
 
   web:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
 
     steps:
       - name: Check out repository
