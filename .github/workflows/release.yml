@@ -3,18 +3,24 @@ name: Deploy Release
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: deploy-release-${{ github.event.release.tag_name }}
+  group: deploy-release-${{ github.event.release.tag_name || inputs.tag }}
   cancel-in-progress: false
 
 jobs:
   verify:
     name: Verify release artifact
-    if: ${{ github.repository == 'verbeux-ai/code' && !github.event.release.draft }}
+    if: ${{ github.repository == 'verbeux-ai/code' && (github.event_name == 'workflow_dispatch' || !github.event.release.draft) }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       tag: ${{ steps.release.outputs.tag }}
@@ -24,7 +30,7 @@ jobs:
       - name: Resolve release tag
         id: release
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
           case "$RELEASE_TAG" in
             v[0-9]*.[0-9]*.[0-9]*) ;;
@@ -88,7 +94,8 @@ jobs:
   publish-npm:
     name: Publish npm package
     needs: verify
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # npm provenance only supports GitHub-hosted runners.
+    runs-on: ubuntu-latest
     environment:
       name: release
       url: https://www.npmjs.com/package/@verboo/code
