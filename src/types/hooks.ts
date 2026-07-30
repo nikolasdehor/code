@@ -3,10 +3,10 @@ import { z } from 'zod/v4'
 import { lazySchema } from '../utils/lazySchema.js'
 import {
   type HookEvent,
-  HOOK_EVENTS,
   type HookInput,
   type PermissionUpdate,
 } from 'src/entrypoints/agentSdkTypes.js'
+import { HOOK_EVENTS } from 'src/entrypoints/sdk/coreTypes.js'
 import type {
   HookJSONOutput,
   AsyncHookJSONOutput,

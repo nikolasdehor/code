@@ -1,5 +1,4 @@
 import { beforeEach, expect, mock, test } from 'bun:test'
-import { HOOK_EVENTS } from './entrypoints/sdk/coreTypes.js'
 
 let lspConnected = false
 
@@ -11,11 +10,6 @@ mock.module('./services/lsp/manager.js', () => ({
   shutdownLspServerManager: async () => {},
   waitForInitialization: async () => {},
 }))
-
-// Several tools consume hook constants through the public SDK barrel. Mock the
-// narrow runtime surface so this unit test does not initialize the SDK barrel
-// and create a tools -> SDK -> tools import cycle.
-mock.module('./entrypoints/agentSdkTypes.js', () => ({ HOOK_EVENTS }))
 
 const { getAllBaseTools, getTools } = await import('./tools.js')
 const { getEmptyToolPermissionContext } = await import('./Tool.js')
