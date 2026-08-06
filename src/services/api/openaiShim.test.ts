@@ -4695,7 +4695,7 @@ test('preserves valid tool_result and drops orphan tool_result', async () => {
   )
   expect(orphanMessage).toBeUndefined()
 
-  // Actually, the semantic message IS injected here because the user block with orphan
+  // A neutral semantic message is injected here because the user block with orphan
   // tool result is converted to:
   // 1. Tool result (valid_call_1) -> role 'tool'
   // 2. User content ("What happened?") -> role 'user'
@@ -4703,9 +4703,14 @@ test('preserves valid tool_result and drops orphan tool_result', async () => {
   const assistantMessages = messages.filter((m) => m.role === 'assistant')
   expect(
     assistantMessages.some(
-      (m) => m.content === '[Tool execution interrupted by user]',
+      (m) => m.content === 'Tool result received. Continuing with the next request.',
     ),
   ).toBe(true)
+  expect(
+    assistantMessages.some((m) =>
+      String(m.content).includes('interrupted by user'),
+    ),
+  ).toBe(false)
 })
 
 test('drops empty assistant message when only thinking block was present and stripped', async () => {
@@ -4758,7 +4763,7 @@ test('drops empty assistant message when only thinking block was present and str
   expect(String(messages[0].content)).toContain('Interrupting query')
 })
 
-test('injects semantic assistant message when tool result is followed by user message', async () => {
+test('injects a neutral assistant bridge when tool result is followed by user message', async () => {
   let requestBody: Record<string, unknown> | undefined
 
   globalThis.fetch = (async (_input, init) => {
@@ -4811,7 +4816,10 @@ test('injects semantic assistant message when tool result is followed by user me
 
   const semanticMsg = messages[2]
   expect(semanticMsg.role).toBe('assistant')
-  expect(semanticMsg.content).toBe('[Tool execution interrupted by user]')
+  expect(semanticMsg.content).toBe(
+    'Tool result received. Continuing with the next request.',
+  )
+  expect(String(semanticMsg.content)).not.toContain('interrupted')
 })
 
 test('Moonshot: uses max_tokens (not max_completion_tokens) and strips store', async () => {

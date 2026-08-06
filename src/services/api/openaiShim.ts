@@ -775,13 +775,14 @@ function convertMessages(
     const prev = coalesced[coalesced.length - 1]
 
     // Mistral/Devstral: 'tool' message must be followed by an 'assistant' message.
-    // If a 'tool' result is followed by a 'user' message, we must inject a semantic
-    // assistant response to satisfy the strict role sequence:
+    // If a completed tool result is followed by a new user message, inject a
+    // neutral acknowledgement to satisfy the strict role sequence. Do not call
+    // this an interruption: this transition also occurs after normal tool runs.
     // ... -> assistant (calls) -> tool (results) -> assistant (semantic) -> user (next)
     if (prev && prev.role === 'tool' && msg.role === 'user') {
       coalesced.push({
         role: 'assistant',
-        content: '[Tool execution interrupted by user]',
+        content: 'Tool result received. Continuing with the next request.',
       })
     }
 
