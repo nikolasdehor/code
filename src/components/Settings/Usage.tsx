@@ -22,8 +22,10 @@ import { Byline } from '../design-system/Byline.js';
 import { ProgressBar } from '../design-system/ProgressBar.js';
 import { isEligibleForOverageCreditGrant, OverageCreditUpsell } from '../LogoV2/OverageCreditUpsell.js';
 import { CodexUsage } from './CodexUsage.js';
+import { ClaudeNativeUsage } from './ClaudeNativeUsage.js';
 import { MiniMaxUsage } from './MiniMaxUsage.js';
 import { VerbooUsage } from './VerbooUsage.js';
+import { getConnectedUsageProviders } from './usageProviders.js';
 type LimitBarProps = {
   title: string;
   limit: RateLimit;
@@ -273,7 +275,43 @@ function AnthropicUsage(): React.ReactNode {
     </Box>;
 }
 export function Usage(): React.ReactNode {
-  return <VerbooUsage />;
+  const [connectedProviders, setConnectedProviders] = useState<{
+    codex: boolean;
+    claude: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void getConnectedUsageProviders().then(providers => {
+      if (active) setConnectedProviders(providers);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  if (!connectedProviders || (!connectedProviders.codex && !connectedProviders.claude)) {
+    return <VerbooUsage />;
+  }
+
+  return <Box flexDirection="column" gap={1} width="100%">
+      <Text bold={true}>Verboo</Text>
+      <VerbooUsage showCancelHint={false} />
+
+      {connectedProviders.codex ? <>
+          <Text bold={true}>Codex</Text>
+          <CodexUsage showCancelHint={false} />
+        </> : null}
+
+      {connectedProviders.claude ? <>
+          <Text bold={true}>Claude</Text>
+          <ClaudeNativeUsage showCancelHint={false} />
+        </> : null}
+
+      <Text dimColor={true}>
+        <ConfigurableShortcutHint action="confirm:no" context="Settings" fallback="Esc" description="cancel" />
+      </Text>
+    </Box>;
 }
 type ExtraUsageSectionProps = {
   extraUsage: ExtraUsage;

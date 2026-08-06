@@ -16,7 +16,11 @@ const MESSAGES = [
   "Limit incoming. Maybe slow down. Or don't.",
 ]
 
-export function VerbooUsage(): React.ReactNode {
+export function VerbooUsage({
+  showCancelHint = true,
+}: {
+  showCancelHint?: boolean
+}): React.ReactNode {
   const message = React.useMemo(
     () => MESSAGES[Math.floor(Math.random() * MESSAGES.length)],
     [],
@@ -25,14 +29,14 @@ export function VerbooUsage(): React.ReactNode {
   return (
     <Box flexDirection="column" gap={1}>
       <Text>{message}</Text>
-      <Text dimColor>
+      {showCancelHint ? <Text dimColor>
         <ConfigurableShortcutHint
           action="confirm:no"
           context="Settings"
           fallback="Esc"
           description="cancel"
         />
-      </Text>
+      </Text> : null}
     </Box>
   )
 }

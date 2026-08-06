@@ -5,6 +5,7 @@ import {
 import { createCombinedAbortSignal } from '../../utils/combinedAbortSignal.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { isBareMode } from '../../utils/envUtils.js'
+import { isVerbooMode } from '../../constants/oauth.js'
 import {
   DEFAULT_CODEX_BASE_URL,
   isCodexBaseUrl,
@@ -414,7 +415,10 @@ export async function fetchCodexUsage(): Promise<CodexUsageData> {
     model: process.env.OPENAI_MODEL,
     baseUrl: process.env.OPENAI_BASE_URL,
   })
-  if (!isCodexBaseUrl(request.baseUrl)) {
+  // Optional /codex access inside Verboo always uses the official backend.
+  // Legacy OPENAI_* environment variables must not hide its usage data.
+  const usageBaseUrl = isVerbooMode() ? DEFAULT_CODEX_BASE_URL : request.baseUrl
+  if (!isCodexBaseUrl(usageBaseUrl)) {
     throw new Error(
       'Codex usage is only available with the official ChatGPT Codex backend.',
     )
@@ -441,7 +445,7 @@ export async function fetchCodexUsage(): Promise<CodexUsageData> {
     timeoutMs: 5000,
   })
   try {
-    const response = await fetch(getCodexUsageUrl(request.baseUrl), {
+    const response = await fetch(getCodexUsageUrl(usageBaseUrl), {
       method: 'GET',
       headers: {
         Accept: 'application/json',

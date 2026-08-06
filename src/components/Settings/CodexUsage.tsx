@@ -92,7 +92,11 @@ function CodexUsageTextRow({
   )
 }
 
-export function CodexUsage(): React.ReactNode {
+export function CodexUsage({
+  showCancelHint = true,
+}: {
+  showCancelHint?: boolean
+}): React.ReactNode {
   const [usage, setUsage] = useState<CodexUsageData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -133,7 +137,7 @@ export function CodexUsage(): React.ReactNode {
     return (
       <Box flexDirection="column" gap={1}>
         <Text color="error">Error: {error}</Text>
-        <Text dimColor>
+        {showCancelHint ? <Text dimColor>
           <Byline>
             <ConfigurableShortcutHint
               action="settings:retry"
@@ -148,7 +152,7 @@ export function CodexUsage(): React.ReactNode {
               description="cancel"
             />
           </Byline>
-        </Text>
+        </Text> : null}
       </Box>
     )
   }
@@ -157,14 +161,14 @@ export function CodexUsage(): React.ReactNode {
     return (
       <Box flexDirection="column" gap={1}>
         <Text dimColor>Loading Codex usage data…</Text>
-        <Text dimColor>
+        {showCancelHint ? <Text dimColor>
           <ConfigurableShortcutHint
             action="confirm:no"
             context="Settings"
             fallback="Esc"
             description="cancel"
           />
-        </Text>
+        </Text> : null}
       </Box>
     )
   }
@@ -192,20 +196,21 @@ export function CodexUsage(): React.ReactNode {
         ) : (
           <CodexUsageTextRow
             key={`${row.label}-${index}`}
+            kind={row.kind}
             label={row.label}
             value={row.value}
           />
         ),
       )}
 
-      <Text dimColor>
+      {showCancelHint ? <Text dimColor>
         <ConfigurableShortcutHint
           action="confirm:no"
           context="Settings"
           fallback="Esc"
           description="cancel"
         />
-      </Text>
+      </Text> : null}
     </Box>
   )
 }
