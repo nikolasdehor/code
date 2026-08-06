@@ -11,12 +11,14 @@ import {
 import { getSSLErrorHint } from '../../services/api/errorUtils.js'
 import { fetchAndStoreClaudeCodeFirstTokenDate } from '../../services/api/firstTokenDate.js'
 import {
-  checkVerbooModels,
-  getNoVerbooModelsMessage,
-  getVerbooModelsUnavailableMessage,
   installVerbooOAuthTokens,
   preflightVerbooLogin,
 } from '../../services/oauth/verbooStartupAuth.js'
+import {
+  assertCLIEntitlement,
+  clearCLIEntitlementCache,
+  fetchCLIEntitlement,
+} from '../../services/oauth/cliEntitlement.js'
 import { showNoModelsFlow } from '../../services/oauth/purchaseFlow.js'
 import {
   createAndStoreApiKey,
@@ -276,9 +278,17 @@ export async function authLogin({
       }
       if (preflight.kind === 'degraded') {
         process.stderr.write(
-          getVerbooModelsUnavailableMessage(preflight.reason) + '\n',
+          `Não foi possível validar a licença Verboo Code: ${preflight.reason}\n`,
         )
         process.exit(1)
+      }
+      if (preflight.kind === 'needs-subscription') {
+        const ok = await showNoModelsFlow(preflight.tokens.accessToken)
+        if (!ok) process.exit(1)
+        clearCLIEntitlementCache()
+        await assertCLIEntitlement({ force: true })
+        process.stdout.write('Assinatura Verboo Code confirmada.\n')
+        process.exit(0)
       }
     }
 
@@ -291,16 +301,13 @@ export async function authLogin({
 
     if (isVerbooMode()) {
       await installVerbooOAuthTokens(result)
-      const models = await checkVerbooModels(result.accessToken)
-      if (models.kind === 'unavailable') {
-        process.stderr.write(
-          getVerbooModelsUnavailableMessage(models.reason) + '\n',
-        )
-        process.exit(1)
-      }
-      if (models.kind === 'empty') {
+      clearCLIEntitlementCache()
+      const entitlement = await fetchCLIEntitlement({ force: true })
+      if (!entitlement.allowed) {
         const ok = await showNoModelsFlow(result.accessToken)
         if (!ok) process.exit(1)
+        clearCLIEntitlementCache()
+        await assertCLIEntitlement({ force: true })
       }
       await preflightVerbooLogin()
     } else {

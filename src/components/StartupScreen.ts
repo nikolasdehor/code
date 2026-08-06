@@ -127,6 +127,7 @@ function resolveVerbooStartupModel(modelOverride?: string): string {
   return (
     resolveIfAvailable(modelOverride) ??
     resolveIfAvailable(getUserSpecifiedModelSetting()) ??
+    cachedModels?.find(model => !isClaudeModelLike(model.id))?.id ??
     getDefaultVerbooModel()
   )
 }

@@ -4,12 +4,13 @@ import * as React from 'react'
 import { resetCostState } from '../../bootstrap/state.js'
 import { isVerbooMode } from '../../constants/oauth.js'
 import {
-  checkVerbooModels,
-  getNoVerbooModelsMessage,
-  getVerbooModelsUnavailableMessage,
   markVerbooSessionValidated,
   preflightVerbooLogin,
 } from '../../services/oauth/verbooStartupAuth.js'
+import {
+  clearCLIEntitlementCache,
+  fetchCLIEntitlement,
+} from '../../services/oauth/cliEntitlement.js'
 import { PurchaseFlowView } from '../../services/oauth/purchaseFlow.js'
 import { getClaudeAIOAuthTokensAsync } from '../../utils/auth.js'
 import {
@@ -70,7 +71,7 @@ export async function call(
         }
 
         if (result.type === 'unavailable') {
-          onDone(getVerbooModelsUnavailableMessage(result.reason), {
+          onDone(`Não foi possível validar a licença Verboo Code: ${result.reason}`, {
             display: 'system',
           })
           return
@@ -81,23 +82,6 @@ export async function call(
         if (!authChanged) {
           if (isVerbooMode()) {
             markVerbooSessionValidated()
-            const storedTokens = await getClaudeAIOAuthTokensAsync()
-            if (storedTokens?.accessToken) {
-              const modelsResult = await checkVerbooModels(storedTokens.accessToken)
-              const [firstModel] = modelsResult.models
-              if (firstModel) {
-                context.setAppState(prev => ({
-                  ...prev,
-                  mainLoopModelOverride: firstModel.id,
-                }))
-              }
-              if (modelsResult.kind === 'unavailable') {
-                onDone(getVerbooModelsUnavailableMessage(modelsResult.reason), {
-                  display: 'system',
-                })
-                return
-              }
-            }
           }
           onDone('Sessão já está válida.')
           return
@@ -145,27 +129,6 @@ export async function call(
 
         if (isVerbooMode()) {
           markVerbooSessionValidated()
-
-          const storedTokens = await getClaudeAIOAuthTokensAsync()
-          if (storedTokens?.accessToken) {
-            const modelsResult = await checkVerbooModels(storedTokens.accessToken)
-            if (modelsResult.kind === 'unavailable') {
-              onDone(
-                `Login concluído. ${getVerbooModelsUnavailableMessage(modelsResult.reason)}`,
-                { display: 'system' },
-              )
-              return
-            }
-            if (modelsResult.kind === 'empty') {
-              onDone(getNoVerbooModelsMessage().trim(), { display: 'system' })
-              return
-            }
-            const [firstModel] = modelsResult.models
-            context.setAppState(prev => ({
-              ...prev,
-              mainLoopModelOverride: firstModel.id,
-            }))
-          }
         }
 
         onDone(result.type === 'ready' ? 'Sessão renovada.' : 'Login successful')
@@ -202,6 +165,11 @@ export function Login(props: {
           )
           return
         }
+        if (result.kind === 'needs-subscription') {
+          setPostLoginToken(result.tokens.accessToken)
+          setPreflightDone(true)
+          return
+        }
         setPreflightDone(true)
       })
       .catch(() => {
@@ -213,28 +181,34 @@ export function Login(props: {
   }, [mainLoopModel, props])
 
   const handleOAuthDone = React.useCallback(
-    async (result: ConsoleOAuthFlowResult | null) => {
+    async (result?: ConsoleOAuthFlowResult) => {
       if (!result) {
         props.onDone({ type: 'cancel' }, mainLoopModel)
         return
       }
 
       if (isVerbooMode()) {
-        markVerbooSessionValidated()
         const storedTokens = await getClaudeAIOAuthTokensAsync()
         if (storedTokens?.accessToken) {
-          const modelsResult = await checkVerbooModels(storedTokens.accessToken)
-          if (modelsResult.kind === 'unavailable') {
+          clearCLIEntitlementCache()
+          let entitlement
+          try {
+            entitlement = await fetchCLIEntitlement({ force: true })
+          } catch (error) {
             props.onDone(
-              { type: 'unavailable', reason: modelsResult.reason },
+              {
+                type: 'unavailable',
+                reason: error instanceof Error ? error.message : String(error),
+              },
               mainLoopModel,
             )
             return
           }
-          if (modelsResult.kind === 'empty') {
+          if (!entitlement.allowed) {
             setPostLoginToken(storedTokens.accessToken)
             return
           }
+          markVerbooSessionValidated()
         }
       }
 
@@ -246,15 +220,22 @@ export function Login(props: {
   const handlePurchaseDone = React.useCallback(
     async (success: boolean) => {
       if (success && postLoginToken) {
-        const modelsResult = await checkVerbooModels(postLoginToken)
-        if (modelsResult.kind === 'unavailable') {
+        clearCLIEntitlementCache()
+        let entitlement
+        try {
+          entitlement = await fetchCLIEntitlement({ force: true })
+        } catch (error) {
           props.onDone(
-            { type: 'unavailable', reason: modelsResult.reason },
+            {
+              type: 'unavailable',
+              reason: error instanceof Error ? error.message : String(error),
+            },
             mainLoopModel,
           )
           return
         }
-        if (modelsResult.kind === 'available') {
+        if (entitlement.allowed) {
+          markVerbooSessionValidated()
           props.onDone({ type: 'ready', refreshed: true }, mainLoopModel)
           return
         }

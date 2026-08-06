@@ -84,8 +84,8 @@ export const VERBOO_ROUTER_URL = 'https://code.verboo.ai/router/v1'
 // allowlist por client, mas explicitar prepara o terreno.
 export const VERBOO_OAUTH_SCOPES = ['user:profile', 'user:inference'] as const
 
-// Verboo Code always runs in native Verboo mode. External provider modes are
-// intentionally disabled so requests always go through the Verboo router.
+// Verboo Code always starts in native Verboo mode. External provider selection
+// is disabled; `/codex` only unlocks additional models in the same model picker.
 export function isVerbooMode(): boolean {
   return true
 }

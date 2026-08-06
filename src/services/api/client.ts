@@ -20,7 +20,6 @@ import { getUserAgent } from 'src/utils/http.js'
 import {
   getDefaultVerbooModel,
   getSmallFastModel,
-  isClaudeModelLike,
 } from 'src/utils/model/model.js'
 import {
   getAPIProvider,
@@ -33,6 +32,10 @@ import {
   getSessionId,
 } from '../../bootstrap/state.js'
 import { isVerbooMode, VERBOO_ROUTER_URL } from '../../constants/oauth.js'
+import { assertCLIEntitlement } from '../oauth/cliEntitlement.js'
+import { assertCodexModelAvailable, getCodexModel } from './codexModels.js'
+import { getCachedVerbooModels } from './verbooModels.js'
+import { DEFAULT_CODEX_BASE_URL } from './providerConfig.js'
 import { isDebugToStdErr, logForDebugging } from '../../utils/debug.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import {
@@ -212,8 +215,8 @@ export async function getAnthropicClient({
   effortValue?: EffortValue
 }): Promise<Anthropic> {
   // Convert the runtime effort value to the OpenAI-shaped enum the shim
-  // expects. In Verboo Auto, suppress descriptor/alias defaults too, so the
-  // router receives no reasoning fields and selects its own default.
+  // expects. In Verboo Auto, suppress descriptor/alias defaults so the active
+  // backend applies its own account/model default.
   const shimReasoningEffort: string | undefined =
     effortValue !== undefined
       ? isVerbooMode() && typeof effortValue === 'string'
@@ -280,50 +283,63 @@ export async function getAnthropicClient({
       fetch: resolvedFetch,
     }),
   }
-  // Verboo always talks to the Verboo router, regardless of any inherited
-  // third-party provider env vars from the parent Verboo session.
+  // Verboo validates its own session for licensing. Regular Verboo models use
+  // the router; optional Codex models use credentials from secure storage.
   const useOAuthToken = isClaudeAISubscriber() || isVerbooMode()
   const accessToken = useOAuthToken
     ? getClaudeAIOAuthTokens()?.accessToken
     : undefined
 
   if (isVerbooMode()) {
-    if (!accessToken) {
-      process.stderr.write(
-        '[Verboo] ERRO: token de acesso não encontrado. Execute `verboo /login`.\n',
-      )
-    }
-    const requestedModel = model?.trim()
-    const safeVerbooModel =
-      requestedModel && !isClaudeModelLike(requestedModel)
-        ? requestedModel.replace(/\[1m\]$/i, '').trim()
-        : getDefaultVerbooModel()
-    if (requestedModel && requestedModel !== safeVerbooModel) {
-      logForDebugging(
-        `[Verboo] Ignoring Claude/unsupported model "${requestedModel}" and using "${safeVerbooModel}"`,
-        { level: 'warn' },
-      )
-    }
+    await assertCLIEntitlement()
+    const requestedModel =
+      model?.trim().replace(/\[1m\]$/i, '') || getDefaultVerbooModel()
     const { createOpenAIShimClient } = await import('./openaiShim.js')
-    return createOpenAIShimClient({
-      defaultHeaders,
-      maxRetries,
-      timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
-      reasoningEffort: shimReasoningEffort,
-      suppressReasoningEffort,
-      providerOverride: {
-        model: safeVerbooModel,
-        baseURL: VERBOO_ROUTER_URL,
-        apiKey: accessToken ?? '',
-        getApiKey: () => getClaudeAIOAuthTokens()?.accessToken ?? '',
-        refreshApiKey: async (failedAccessToken) => {
-          const outcome = await handleOAuth401ErrorWithOutcome(failedAccessToken)
-          return didOAuthRefreshRecover(outcome)
-            ? (getClaudeAIOAuthTokens()?.accessToken ?? null)
-            : null
+
+    const verbooModel = getCachedVerbooModels()?.find(
+      candidate => candidate.id === requestedModel,
+    )
+    if (verbooModel) {
+      return createOpenAIShimClient({
+        defaultHeaders,
+        maxRetries,
+        timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
+        reasoningEffort: shimReasoningEffort,
+        suppressReasoningEffort,
+        providerOverride: {
+          model: verbooModel.id,
+          baseURL: VERBOO_ROUTER_URL,
+          apiKey: accessToken ?? '',
+          getApiKey: () => getClaudeAIOAuthTokens()?.accessToken ?? '',
+          refreshApiKey: async failedAccessToken => {
+            const outcome = await handleOAuth401ErrorWithOutcome(failedAccessToken)
+            return didOAuthRefreshRecover(outcome)
+              ? (getClaudeAIOAuthTokens()?.accessToken ?? null)
+              : null
+          },
         },
-      },
-    }) as unknown as Anthropic
+      }) as unknown as Anthropic
+    }
+
+    if (getCodexModel(requestedModel)) {
+      const codexModel = await assertCodexModelAvailable(requestedModel)
+      return createOpenAIShimClient({
+        defaultHeaders,
+        maxRetries,
+        timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
+        reasoningEffort: shimReasoningEffort,
+        suppressReasoningEffort,
+        providerOverride: {
+          model: codexModel.id,
+          baseURL: DEFAULT_CODEX_BASE_URL,
+          apiKey: '',
+        },
+      }) as unknown as Anthropic
+    }
+
+    throw new Error(
+      `O modelo '${requestedModel}' não está disponível. Execute /model para escolher um modelo liberado.`,
+    )
   }
 
   // Agent routing override: use per-agent provider when configured.

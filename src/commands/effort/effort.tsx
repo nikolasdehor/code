@@ -8,7 +8,6 @@ import { type EffortValue, getAvailableEffortLevels, getDisplayedEffortLevel, ge
 import { EffortPicker } from '../../components/EffortPicker.js';
 import { updateSettingsForSource } from '../../utils/settings/settings.js';
 import { isVerbooMode } from '../../constants/oauth.js';
-import { getVerbooReasoningEffort } from '../../services/api/verbooModels.js';
 const COMMON_HELP_ARGS = ['help', '-h', '--help'];
 type EffortCommandResult = {
   message: string;
@@ -16,6 +15,10 @@ type EffortCommandResult = {
     value: EffortValue | undefined;
   };
 };
+
+export function resolveAvailableEffortLevel(available: string[], requested: string): string | undefined {
+  return available.find(level => level === requested);
+}
 function setEffortValue(effortValue: EffortValue): EffortCommandResult {
   const persistable = toPersistableEffort(effortValue);
   if (persistable !== undefined) {
@@ -67,7 +70,7 @@ export function showCurrentEffort(appStateEffort: EffortValue | undefined, model
   const effectiveValue = envOverride === null ? undefined : envOverride ?? appStateEffort;
   if (isVerbooMode()) {
     const displayed = getDisplayedEffortLevel(model, appStateEffort);
-    const explicit = typeof effectiveValue === 'string' && Boolean(getVerbooReasoningEffort(model, effectiveValue));
+    const explicit = typeof effectiveValue === 'string' && getAvailableEffortLevels(model).includes(effectiveValue);
     if (!explicit) {
       return {
         message: `Effort level: auto (currently ${displayed})`
@@ -126,7 +129,7 @@ export function executeEffort(args: string, model?: string): EffortCommandResult
   }
   if (isVerbooMode() && model) {
     const available = getAvailableEffortLevels(model);
-    const supported = getVerbooReasoningEffort(model, normalized);
+    const supported = resolveAvailableEffortLevel(available, normalized);
     if (supported) {
       return setEffortValue(supported);
     }

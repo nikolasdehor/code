@@ -8,7 +8,7 @@ import { openBrowser } from '../utils/browser.js'
 import { saveCodexCredentials } from '../utils/codexCredentials.js'
 import { isBareMode } from '../utils/envUtils.js'
 
-export type CodexOAuthFlowStatus =
+type CodexOAuthFlowState =
   | { state: 'starting' }
   | {
       state: 'waiting'
@@ -19,6 +19,10 @@ export type CodexOAuthFlowStatus =
       state: 'error'
       message: string
     }
+
+export type CodexOAuthFlowStatus = CodexOAuthFlowState & {
+  cancel: () => void
+}
 
 type PersistCodexOAuthCredentials = (options?: {
   profileId?: string
@@ -55,12 +59,15 @@ export function useCodexOAuthFlow(options: {
   const saveCredentials =
     options.deps?.saveCodexCredentials ?? saveCodexCredentials
   const isBareModeFn = options.deps?.isBareMode ?? isBareMode
-  const [status, setStatus] = React.useState<CodexOAuthFlowStatus>({
+  const [status, setStatus] = React.useState<CodexOAuthFlowState>({
     state: 'starting',
   })
+  const cancelRef = React.useRef<() => void>(() => {})
+  const cancel = React.useCallback(() => cancelRef.current(), [])
 
   React.useEffect(() => {
     if (isBareModeFn()) {
+      cancelRef.current = () => {}
       setStatus({
         state: 'error',
         message:
@@ -71,6 +78,12 @@ export function useCodexOAuthFlow(options: {
 
     let cancelled = false
     const oauthService = createOAuthService()
+    const cancelFlow = () => {
+      if (cancelled) return
+      cancelled = true
+      oauthService.cleanup()
+    }
+    cancelRef.current = cancelFlow
 
     void oauthService
       .startOAuthFlow(async authUrl => {
@@ -119,8 +132,8 @@ export function useCodexOAuthFlow(options: {
       })
 
     return () => {
-      cancelled = true
-      oauthService.cleanup()
+      cancelFlow()
+      cancelRef.current = () => {}
     }
   }, [
     createOAuthService,
@@ -130,5 +143,5 @@ export function useCodexOAuthFlow(options: {
     saveCredentials,
   ])
 
-  return status
+  return React.useMemo(() => ({ ...status, cancel }), [cancel, status])
 }

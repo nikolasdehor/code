@@ -32,7 +32,6 @@ import {
   fetchMarketplaceGroups,
   type MarketplaceGroup,
 } from '../api/verbooMarketplace.js'
-import { fetchVerbooModels } from '../api/verbooModels.js'
 import {
   fetchSubscriptions,
   type SubscriptionResponse,
@@ -772,14 +771,8 @@ export function PurchaseFlowView({
             signal: controller.signal,
           })
           if (active) {
-            const models = await fetchVerbooModels(accessToken, {
-              force: true,
-              signal: controller.signal,
-            })
-            if (models.length > 0) {
-              if (pollingRef.current === controller) complete()
-              return
-            }
+            if (pollingRef.current === controller) complete()
+            return
           }
         } catch (error) {
           if (controller.signal.aborted) return

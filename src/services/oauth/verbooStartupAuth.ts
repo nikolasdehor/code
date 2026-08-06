@@ -6,12 +6,6 @@ import {
   isVerbooMode,
 } from '../../constants/oauth.js'
 import {
-  clearVerbooModelsCache,
-  fetchVerbooModels,
-  type VerbooModel,
-} from '../api/verbooModels.js'
-import { fetchSubscriptions } from '../api/verbooSubscriptions.js'
-import {
   checkAndRefreshOAuthTokenIfNeeded,
   clearOAuthTokenCache,
   didOAuthRefreshRecover,
@@ -29,8 +23,21 @@ import { storeOAuthAccountInfo } from './client.js'
 import type { OAuthTokens } from './types.js'
 import { showNoModelsFlow } from './purchaseFlow.js'
 import { showPastDueNotice } from './pastDueFlow.js'
-import { hasCurrentSubscriptionEntitlement } from './subscriptionAccess.js'
 import { showVerbooTermsAcceptance } from '../../components/VerbooTermsAcceptance.js'
+import {
+  clearCLIEntitlementCache,
+  fetchCLIEntitlement,
+  getCLIEntitlementDeniedMessage,
+} from './cliEntitlement.js'
+import {
+  clearCodexModelsCache,
+  fetchCodexModels,
+} from '../api/codexModels.js'
+import {
+  clearVerbooModelsCache,
+  fetchVerbooModels,
+} from '../api/verbooModels.js'
+import { readCodexCredentialsAsync } from '../../utils/codexCredentials.js'
 import {
   fetchVerbooTermsStatus,
   formatTermsDeadline,
@@ -47,16 +54,11 @@ export type VerbooLoginPreflightResult =
   | {
       kind: 'ready'
       tokens: OAuthTokens
-      models: VerbooModel[]
       refreshed: boolean
     }
-  | { kind: 'needs-oauth'; reason: 'unauthenticated' | 'no-models' }
+  | { kind: 'needs-oauth'; reason: 'unauthenticated' }
+  | { kind: 'needs-subscription'; tokens: OAuthTokens }
   | { kind: 'degraded'; reason: string }
-
-export type VerbooModelsCheckResult =
-  | { kind: 'available'; models: VerbooModel[] }
-  | { kind: 'empty'; models: [] }
-  | { kind: 'unavailable'; reason: string; models: [] }
 
 let validated = false
 
@@ -66,6 +68,7 @@ export function isVerbooSessionValidated(): boolean {
 
 export function resetVerbooSessionValidation(): void {
   validated = false
+  clearCLIEntitlementCache()
 }
 
 export function markVerbooSessionValidated(): void {
@@ -190,85 +193,6 @@ export type EnsureAuthOpts = {
   onAuthUrl?: (url: string) => void | Promise<void>
 }
 
-export async function checkVerbooModels(
-  accessToken: string,
-): Promise<VerbooModelsCheckResult> {
-  try {
-    const models = await fetchVerbooModels(accessToken, { force: true })
-    if (models.length > 0) {
-      return { kind: 'available', models }
-    }
-    return { kind: 'empty', models: [] }
-  } catch (err) {
-    return {
-      kind: 'unavailable',
-      reason: errorMessage(err),
-      models: [],
-    }
-  }
-}
-
-export function getVerbooModelsUnavailableMessage(reason: string): string {
-  return (
-    `Não foi possível verificar os modelos do Verboo: ${reason}.\n` +
-    'Sua sessão local foi preservada. Tente novamente em alguns instantes.'
-  )
-}
-
-async function loadAndCheckModels(accessToken: string): Promise<void> {
-  const result = await checkVerbooModels(accessToken)
-  if (result.kind === 'available') return
-  if (result.kind === 'unavailable') {
-    throw new Error(getVerbooModelsUnavailableMessage(result.reason))
-  }
-
-  // An active grant with no router models is a provisioning delay, not an
-  // invitation to buy the same plan again. Give propagation a short window
-  // and fail with a specific recovery message instead of opening the catalog.
-  const subscriptions = await fetchSubscriptions(accessToken)
-  const hasCurrentEntitlement = hasCurrentSubscriptionEntitlement(subscriptions)
-  if (hasCurrentEntitlement) {
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 3_000))
-      const refreshed = await checkVerbooModels(accessToken)
-      if (refreshed.kind === 'available') return
-      if (refreshed.kind === 'unavailable') {
-        throw new Error(getVerbooModelsUnavailableMessage(refreshed.reason))
-      }
-    }
-    throw new Error(
-      'Sua assinatura está ativa, mas os modelos ainda não foram liberados. Tente novamente em instantes ou contate o suporte.',
-    )
-  }
-
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    throw new Error(
-      'Nenhum modelo disponível nesta conta. Execute `verboo /login` em um terminal interativo para escolher um plano.',
-    )
-  }
-  const ok = await showNoModelsFlow(accessToken)
-  if (ok) {
-    // Re-check models after purchase flow
-    const refreshed = await checkVerbooModels(accessToken)
-    if (refreshed.kind === 'available') return
-    if (refreshed.kind === 'unavailable') {
-      throw new Error(getVerbooModelsUnavailableMessage(refreshed.reason))
-    }
-  }
-  process.stdout.write('\n  Para trocar de conta, execute: verboo logout\n\n')
-  // eslint-disable-next-line custom-rules/no-process-exit
-  process.exit(1)
-}
-
-async function resolvePastDueBeforeModels(accessToken: string): Promise<void> {
-  const resolved = await showPastDueNotice(accessToken)
-  if (!resolved) {
-    throw new Error(
-      'Existe um pagamento pendente. Regularize a assinatura antes de escolher outro plano.',
-    )
-  }
-}
-
 async function ensureVerbooTermsAccepted(accessToken: string): Promise<void> {
   const result = await fetchVerbooTermsStatus(accessToken)
   if (result.kind === 'unauthorized') {
@@ -317,12 +241,57 @@ async function ensureVerbooTermsAccepted(accessToken: string): Promise<void> {
   }
 }
 
-export function getNoVerbooModelsMessage(): string {
-  return (
-    '\nNenhum modelo disponivel na sua conta.\n' +
-    '  Execute verboo novamente para ver os planos disponiveis.\n\n' +
-    '  Para trocar de conta, execute: verboo logout\n\n'
-  )
+async function ensureCLIEntitlement(accessToken: string): Promise<void> {
+  clearCLIEntitlementCache()
+  let entitlement = await fetchCLIEntitlement({ force: true })
+  if (entitlement.allowed) return
+
+  if (entitlement.reason === 'past_due') {
+    const resolved = await showPastDueNotice(accessToken)
+    if (resolved) {
+      clearCLIEntitlementCache()
+      entitlement = await fetchCLIEntitlement({ force: true })
+      if (entitlement.allowed) return
+    }
+  } else if (process.stdin.isTTY && process.stdout.isTTY) {
+    const purchased = await showNoModelsFlow(accessToken)
+    if (purchased) {
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        clearCLIEntitlementCache()
+        entitlement = await fetchCLIEntitlement({ force: true })
+        if (entitlement.allowed) return
+        if (attempt < 3) {
+          await new Promise(resolve => setTimeout(resolve, 3_000))
+        }
+      }
+    }
+  }
+
+  throw new Error(getCLIEntitlementDeniedMessage(entitlement.reason))
+}
+
+async function primeCodexCatalogIfAuthenticated(): Promise<void> {
+  const credentials = await readCodexCredentialsAsync()
+  if (!credentials) return
+  clearCodexModelsCache()
+  try {
+    await fetchCodexModels({ force: true })
+  } catch (error) {
+    logForDebugging(
+      `[VerbooStartup] Não foi possível atualizar o catálogo Codex: ${errorMessage(error)}`,
+      { level: 'warn' },
+    )
+  }
+}
+
+async function loadVerbooCatalog(accessToken: string): Promise<void> {
+  clearVerbooModelsCache()
+  const models = await fetchVerbooModels(accessToken, { force: true })
+  if (models.length === 0) {
+    throw new Error(
+      'Nenhum modelo Verboo está disponível para esta conta no momento.',
+    )
+  }
 }
 
 export async function installVerbooOAuthTokens(
@@ -371,18 +340,19 @@ export async function preflightVerbooLogin(): Promise<VerbooLoginPreflightResult
     }
   }
 
-  const models = await checkVerbooModels(session.tokens.accessToken)
-  if (models.kind === 'unavailable') {
-    return { kind: 'degraded', reason: models.reason }
+  let entitlement
+  try {
+    entitlement = await fetchCLIEntitlement({ force: true })
+  } catch (error) {
+    return { kind: 'degraded', reason: errorMessage(error) }
   }
-  if (models.kind === 'empty') {
-    return { kind: 'needs-oauth', reason: 'no-models' }
+  if (!entitlement.allowed) {
+    return { kind: 'needs-subscription', tokens: session.tokens }
   }
 
   return {
     kind: 'ready',
     tokens: session.tokens,
-    models: models.models,
     refreshed: session.refreshed,
   }
 }
@@ -397,22 +367,20 @@ export async function ensureVerbooAuthenticated(
 ): Promise<void> {
   if (!isVerbooMode() || validated) return
 
-  // Sempre buscar modelos frescos a cada restart — sem cache entre sessões.
-  clearVerbooModelsCache()
-
   const session = await validateVerbooSession()
 
   if (session.kind === 'ok') {
     await ensureVerbooTermsAccepted(session.tokens.accessToken)
-    await resolvePastDueBeforeModels(session.tokens.accessToken)
-    await loadAndCheckModels(session.tokens.accessToken)
+    await ensureCLIEntitlement(session.tokens.accessToken)
+    await loadVerbooCatalog(session.tokens.accessToken)
+    await primeCodexCatalogIfAuthenticated()
     validated = true
     return
   }
 
   if (session.kind === 'degraded') {
     logForDebugging(
-      `[VerbooStartup] Sessão degradada: ${session.reason}. Validando termos e roteador antes de liberar.`,
+      `[VerbooStartup] Sessão degradada: ${session.reason}. Validando termos e licença antes de liberar.`,
     )
 
     const stored = await getClaudeAIOAuthTokensAsync()
@@ -420,8 +388,9 @@ export async function ensureVerbooAuthenticated(
       throw new Error('Não foi possível validar a sessão local do Verboo.')
     }
     await ensureVerbooTermsAccepted(stored.accessToken)
-    await resolvePastDueBeforeModels(stored.accessToken)
-    await loadAndCheckModels(stored.accessToken)
+    await ensureCLIEntitlement(stored.accessToken)
+    await loadVerbooCatalog(stored.accessToken)
+    await primeCodexCatalogIfAuthenticated()
     validated = true
     return
   }
@@ -464,15 +433,15 @@ export async function ensureVerbooAuthenticated(
       : { ...current, hasCompletedOnboarding: true },
   )
 
-  // In a transient `/api/me` outage, the freshly returned OAuth token can
-  // still be valid, but terms and the router must both confirm access before
-  // we mark the session as validated.
+  // Terms and the server-side CLI entitlement must both confirm access before
+  // the session is marked as validated.
   const accessToken =
     confirmedSession.kind === 'ok'
       ? confirmedSession.tokens.accessToken
       : tokens.accessToken
   await ensureVerbooTermsAccepted(accessToken)
-  await resolvePastDueBeforeModels(accessToken)
-  await loadAndCheckModels(accessToken)
+  await ensureCLIEntitlement(accessToken)
+  await loadVerbooCatalog(accessToken)
+  await primeCodexCatalogIfAuthenticated()
   validated = true
 }

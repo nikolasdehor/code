@@ -7,6 +7,7 @@
  */
 import { getMainLoopModelOverride } from '../../bootstrap/state.js'
 import { isVerbooMode } from '../../constants/oauth.js'
+import { getCachedCodexModels } from '../../services/api/codexModels.js'
 import { getCachedVerbooModels } from '../../services/api/verbooModels.js'
 import { getGlobalConfig, saveGlobalConfig } from '../config.js'
 import {
@@ -37,9 +38,6 @@ export type ModelShortName = string
 export type ModelName = string
 export type ModelSetting = ModelName | ModelAlias | null
 
-const VERBOO_NO_MODELS_ERROR =
-  'Nenhum modelo Verboo disponível na sua conta. Compre acesso em https://code.verboo.ai e execute `verboo /login` novamente.'
-
 function normalizeModelSetting(value: unknown): ModelName | ModelAlias | undefined {
   if (typeof value !== 'string') return undefined
   const trimmed = value.trim()
@@ -62,22 +60,18 @@ export function isClaudeModelLike(model: unknown): boolean {
 }
 
 export function getDefaultVerbooModel(): ModelName {
-  const cached = getCachedVerbooModels()
-  if (!cached || cached.length === 0) {
-    throw new Error(VERBOO_NO_MODELS_ERROR)
-  }
+  const verbooModels = getCachedVerbooModels() ?? []
+  const codexModels = getCachedCodexModels() ?? []
 
-  // Prefer the last model the user explicitly used
   const lastModel = getGlobalConfig().lastVerbooModel
-  if (lastModel && cached.some(m => m.id === lastModel && !isClaudeModelLike(m.id))) {
+  if (
+    lastModel &&
+    [...verbooModels, ...codexModels].some(model => model.id === lastModel)
+  ) {
     return lastModel
   }
 
-  // Fallback to the first non-Claude model in the list
-  const cachedModel = cached.find(m => !isClaudeModelLike(m.id))?.id
-  if (cachedModel) return cachedModel
-
-  throw new Error(VERBOO_NO_MODELS_ERROR)
+  return verbooModels[0]?.id ?? codexModels[0]?.id ?? lastModel ?? 'verboo-default'
 }
 
 export function saveLastVerbooModel(model: string): void {
@@ -94,14 +88,17 @@ function getVerbooSpecifiedModel(
   }
 
   const normalized = normalizeModelSetting(specifiedModel)
-  if (!normalized || isClaudeModelLike(normalized)) {
+  if (!normalized) {
     return undefined
   }
 
   const modelWithoutContext = normalized.replace(/\[1m\]$/i, '').trim()
-  const cached = getCachedVerbooModels()
-  if (cached && cached.length > 0) {
-    return cached.some(m => m.id === modelWithoutContext && !isClaudeModelLike(m.id))
+  const cached = [
+    ...(getCachedVerbooModels() ?? []),
+    ...(getCachedCodexModels() ?? []),
+  ]
+  if (cached.length > 0) {
+    return cached.some(m => m.id === modelWithoutContext)
       ? modelWithoutContext
       : undefined
   }
@@ -250,7 +247,13 @@ export function getMainLoopModel(): ModelName {
   }
 
   // Persist the last used Verboo model so the next session picks it up
-  if (isVerbooMode() && resolved) {
+  if (
+    isVerbooMode() &&
+    resolved &&
+    [...(getCachedVerbooModels() ?? []), ...(getCachedCodexModels() ?? [])].some(
+      model => model.id === resolved,
+    )
+  ) {
     saveLastVerbooModel(resolved)
   }
 
@@ -512,12 +515,9 @@ export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
     return getDefaultOpusModel() + (isOpus1mMergeEnabled() ? '[1m]' : '')
   }
 
-  // Verboo mode: use first available model from router cache
+  // Verboo models remain the default; Codex models are optional additions.
   if (isVerbooMode()) {
-    const cached = getCachedVerbooModels()
-    if (cached && cached.length > 0) {
-      return cached[0].id
-    }
+    return getDefaultVerbooModel()
   }
 
   // PAYG (1P and 3P), Enterprise, Team Standard, and Pro get Sonnet as default
@@ -849,15 +849,6 @@ export function parseUserSpecifiedModel(
     : normalizedModel
 
   if (isVerbooMode()) {
-    if (modelString === 'codexplan') {
-      return 'gpt-5.5'
-    }
-    if (modelString === 'codexspark') {
-      return 'gpt-5.3-codex-spark'
-    }
-    if (isClaudeModelLike(modelString)) {
-      return getDefaultVerbooModel()
-    }
     return modelInputTrimmed.replace(/\[1m\]$/i, '').trim()
   }
 

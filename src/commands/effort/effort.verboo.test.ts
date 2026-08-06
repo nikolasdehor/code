@@ -1,37 +1,19 @@
-import { afterEach, expect, mock, test } from 'bun:test'
-import axios from 'axios'
+import { expect, test } from 'bun:test'
 
-import { executeEffort } from './effort.js'
-import {
-  clearVerbooModelsCache,
-  fetchVerbooModels,
-} from '../../services/api/verbooModels.js'
+import { executeEffort, resolveAvailableEffortLevel } from './effort.js'
 
-const originalGet = axios.get
-
-afterEach(() => {
-  axios.get = originalGet
-  clearVerbooModelsCache()
+test('/effort accepts a level exposed by a regular Verboo model', () => {
+  expect(resolveAvailableEffortLevel(['low', 'high'], 'low')).toBe('low')
 })
 
-test('/effort rejects values outside the advertised reasoning values for the active model', async () => {
-  axios.get = mock(async () => ({
-    data: {
-      data: [
-        {
-          id: 'verboo/reasoner',
-          reasoning: {
-            effort_levels: ['Fast', 'balanced', 'deep'],
-            default_effort: 'balanced',
-          },
-        },
-      ],
-    },
-  })) as typeof axios.get
-  await fetchVerbooModels('access-token', { force: true })
+test('/effort accepts a level exposed by an unlocked Codex model', () => {
+  expect(
+    resolveAvailableEffortLevel(['low', 'medium', 'high'], 'medium'),
+  ).toBe('medium')
+})
 
-  expect(executeEffort('high', 'verboo/reasoner')).toEqual({
-    message:
-      'Invalid reasoning level: high. Available for verboo/reasoner: Fast, balanced, deep, auto',
+test('/effort rejects values unavailable for the selected model', () => {
+  expect(executeEffort('high', 'missing-model')).toEqual({
+    message: 'Reasoning is not supported for missing-model',
   })
 })

@@ -9,6 +9,11 @@ import { supportsCodexReasoningEffort } from '../services/api/providerConfig.js'
 import { isEnvTruthy } from './envUtils.js'
 import { isVerbooMode } from '../constants/oauth.js'
 import {
+  getCodexModel,
+  getCodexReasoningEffort,
+  getCodexReasoningLevels,
+} from '../services/api/codexModels.js'
+import {
   getVerbooModelReasoning,
   getVerbooReasoningEffort,
 } from '../services/api/verbooModels.js'
@@ -36,7 +41,11 @@ export type EffortValue = EffortString | number
 
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports the effort parameter.
 export function modelSupportsEffort(model: string): boolean {
-  if (isVerbooMode()) return getVerbooModelReasoning(model) !== undefined
+  if (isVerbooMode()) {
+    return getCodexModel(model)
+      ? getCodexReasoningLevels(model).length > 0
+      : getVerbooModelReasoning(model) !== undefined
+  }
   const m = model.toLowerCase()
   if (isEnvTruthy(process.env.CLAUDE_CODE_ALWAYS_ENABLE_EFFORT)) {
     return true
@@ -99,7 +108,9 @@ export function modelUsesOpenAIEffort(model: string): boolean {
 
 export function getAvailableEffortLevels(model: string): string[] {
   if (isVerbooMode()) {
-    return getVerbooModelReasoning(model)?.effortLevels ?? []
+    return getCodexModel(model)
+      ? getCodexReasoningLevels(model)
+      : (getVerbooModelReasoning(model)?.effortLevels ?? [])
   }
   if (!modelSupportsEffort(model)) {
     return []
@@ -237,10 +248,17 @@ export function resolveAppliedEffort(
     return undefined
   }
   if (isVerbooMode()) {
-    const reasoning = getVerbooModelReasoning(model)
-    if (!reasoning) return undefined
+    const modelInfo = getCodexModel(model)
     const selected = envOverride ?? appStateEffortValue
     if (selected === undefined) return undefined
+    if (modelInfo) {
+      if (modelInfo.supportedReasoningLevels.length === 0) return undefined
+      return typeof selected === 'string'
+        ? getCodexReasoningEffort(model, selected) ?? modelInfo.defaultReasoningLevel
+        : modelInfo.defaultReasoningLevel
+    }
+    const reasoning = getVerbooModelReasoning(model)
+    if (!reasoning) return undefined
     return typeof selected === 'string'
       ? getVerbooReasoningEffort(model, selected) ?? reasoning.defaultEffort
       : reasoning.defaultEffort
@@ -274,7 +292,9 @@ export function getDisplayedEffortLevel(
   if (isVerbooMode()) {
     return typeof resolved === 'string'
       ? resolved
-      : (getVerbooModelReasoning(model)?.defaultEffort ?? 'high')
+      : (getCodexModel(model)?.defaultReasoningLevel ??
+          getVerbooModelReasoning(model)?.defaultEffort ??
+          'high')
   }
   return convertEffortValueToLevel(resolved ?? 'high')
 }
@@ -290,10 +310,17 @@ export function getEffortSuffix(
 ): string {
   const resolved = resolveAppliedEffort(model, effortValue)
   if (isVerbooMode()) {
-    const reasoning = getVerbooModelReasoning(model)
-    if (!reasoning) return ''
+    const modelInfo = getCodexModel(model)
+    const verbooReasoning = getVerbooModelReasoning(model)
+    if (
+      (!modelInfo || modelInfo.supportedReasoningLevels.length === 0) &&
+      !verbooReasoning
+    ) return ''
     const displayed =
-      typeof resolved === 'string' ? resolved : reasoning.defaultEffort
+      typeof resolved === 'string'
+        ? resolved
+        : (modelInfo?.defaultReasoningLevel ?? verbooReasoning?.defaultEffort)
+    if (!displayed) return ''
     return ` with ${displayed} effort`
   }
   if (resolved === undefined) return ''

@@ -28,7 +28,7 @@
 import { randomUUID } from 'crypto'
 import { APIError } from '@anthropic-ai/sdk'
 import { getSessionId } from '../../bootstrap/state.js'
-import { VERBOO_ROUTER_URL } from '../../constants/oauth.js'
+import { isVerbooMode, VERBOO_ROUTER_URL } from '../../constants/oauth.js'
 import {
   readCodexCredentialsAsync,
   refreshCodexAccessTokenIfNeeded,
@@ -68,10 +68,12 @@ import {
   getLocalProviderRetryBaseUrls,
   getGithubEndpointType,
   isLocalProviderUrl,
+  resolveStoredCodexCredentials,
   resolveRuntimeCodexCredentials,
   resolveProviderRequest,
   shouldAttemptLocalToollessRetry,
   type LocalFastPathConfig,
+  type ResolvedCodexCredentials,
 } from './providerConfig.js'
 import {
   buildOpenAICompatibilityErrorMessage,
@@ -2128,7 +2130,9 @@ class OpenAIShimMessages {
     }
 
     if (request.transport === 'codex_responses' && !isGithubMode) {
-      const refreshResult = await refreshCodexAccessTokenIfNeeded().catch(
+      const refreshResult = await refreshCodexAccessTokenIfNeeded({
+        ignoreEnvironment: isVerbooMode(),
+      }).catch(
         async (error) => {
           logForDebugging(
             `[codex] access token refresh failed before request: ${error instanceof Error ? error.message : String(error)}`,
@@ -2140,14 +2144,22 @@ class OpenAIShimMessages {
           }
         },
       )
-      const credentials = resolveRuntimeCodexCredentials({
-        storedCredentials: refreshResult.credentials,
-      })
+      const credentials: ResolvedCodexCredentials =
+        isVerbooMode() && refreshResult.credentials
+          ? resolveStoredCodexCredentials({
+              storedCredentials: refreshResult.credentials,
+            })
+          : isVerbooMode()
+            ? { apiKey: '', source: 'none' as const }
+            : resolveRuntimeCodexCredentials({
+                storedCredentials: refreshResult.credentials,
+              })
       if (!credentials.apiKey) {
-        // VERBOO-BRAND: /provider command unregistered
-        const oauthHint = isBareMode()
-          ? ''
-          : ', or contact your Verboo admin to switch provider'
+        const oauthHint = isVerbooMode()
+          ? ' Execute `/codex login`.'
+          : isBareMode()
+            ? ''
+            : ', or contact your Verboo admin to switch provider'
         const authHint = credentials.authPath
           ? `${oauthHint} or place a Codex auth.json at ${credentials.authPath}`
           : oauthHint
@@ -2157,16 +2169,20 @@ class OpenAIShimMessages {
             process.env as SecretValueSource,
           ) ?? 'the requested model'
         throw new Error(
-          `Codex auth is required for ${safeModel}. Set CODEX_API_KEY${authHint}.`,
+          isVerbooMode()
+            ? `Login Codex obrigatório para usar ${safeModel}. Execute /codex login.`
+            : `Codex auth is required for ${safeModel}. Set CODEX_API_KEY${authHint}.`,
         )
       }
       if (!credentials.accountId) {
         throw new Error(
-          'Codex auth is missing chatgpt_account_id. Re-login with Codex OAuth, the Codex CLI, or set CHATGPT_ACCOUNT_ID/CODEX_ACCOUNT_ID.',
+          isVerbooMode()
+            ? 'O login Codex está incompleto. Execute `/codex login` novamente.'
+            : 'Codex auth is missing chatgpt_account_id. Re-login with Codex OAuth, the Codex CLI, or set CHATGPT_ACCOUNT_ID/CODEX_ACCOUNT_ID.',
         )
       }
 
-      return performCodexRequest({
+      const requestOptions = {
         request,
         credentials,
         params,
@@ -2175,7 +2191,28 @@ class OpenAIShimMessages {
           ...filterAnthropicHeaders(options?.headers),
         },
         signal: options?.signal,
-      })
+      }
+      try {
+        return await performCodexRequest(requestOptions)
+      } catch (error) {
+        if ((error as { status?: number }).status !== 401) throw error
+        const refreshed = await refreshCodexAccessTokenIfNeeded({
+          force: true,
+          ignoreEnvironment: isVerbooMode(),
+        })
+        if (!refreshed.credentials) throw error
+        const retryCredentials = isVerbooMode()
+          ? resolveStoredCodexCredentials({
+              storedCredentials: refreshed.credentials,
+            })
+          : resolveRuntimeCodexCredentials({
+              storedCredentials: refreshed.credentials,
+            })
+        return performCodexRequest({
+          ...requestOptions,
+          credentials: retryCredentials,
+        })
+      }
     }
 
     return this._doOpenAIRequest(request, params, options)

@@ -218,3 +218,68 @@ test('persists credentials with profile linkage after downstream setup succeeds'
     await Bun.sleep(0)
   }
 })
+
+test('cancel stops the pending OAuth service and ignores a late completion', async () => {
+  const cleanup = mock(() => {})
+  const saveCodexCredentials = mock(() => ({ success: true }))
+  const onAuthenticated = mock(async () => {})
+  let resolveOAuth: ((tokens: typeof TOKENS) => void) | undefined
+  let cancelFlow: (() => void) | undefined
+  const deps = {
+    createOAuthService: () => ({
+      async startOAuthFlow(
+        onAuthorizationUrl: (authUrl: string) => void | Promise<void>,
+      ) {
+        await onAuthorizationUrl('https://chatgpt.com/codex')
+        return new Promise<typeof TOKENS>(resolve => {
+          resolveOAuth = resolve
+        })
+      },
+      cleanup,
+    }),
+    openBrowser: async () => true,
+    saveCodexCredentials,
+    isBareMode: () => false,
+  }
+
+  const { useCodexOAuthFlow } = await import(
+    `./useCodexOAuthFlow.js?real-cancel-${Date.now()}-${Math.random()}`
+  )
+
+  function Harness(): React.ReactNode {
+    const handleAuthenticated = React.useCallback(onAuthenticated, [onAuthenticated])
+    const status = useCodexOAuthFlow({
+      onAuthenticated: handleAuthenticated,
+      deps,
+    })
+    cancelFlow = status.cancel
+    return <Text>{status.state}</Text>
+  }
+
+  const streams = createTestStreams()
+  const root = await createRoot({
+    stdout: streams.stdout as unknown as NodeJS.WriteStream,
+    stdin: streams.stdin as unknown as NodeJS.ReadStream,
+    patchConsole: false,
+  })
+  root.render(<Harness />)
+
+  try {
+    await waitForCondition(() => Boolean(resolveOAuth && cancelFlow))
+    cancelFlow?.()
+    expect(cleanup).toHaveBeenCalledTimes(1)
+
+    resolveOAuth?.(TOKENS)
+    await Bun.sleep(0)
+    await Bun.sleep(0)
+    expect(onAuthenticated).not.toHaveBeenCalled()
+    expect(saveCodexCredentials).not.toHaveBeenCalled()
+  } finally {
+    root.unmount()
+    streams.stdin.end()
+    streams.stdout.end()
+    await Bun.sleep(0)
+  }
+
+  expect(cleanup).toHaveBeenCalledTimes(1)
+})

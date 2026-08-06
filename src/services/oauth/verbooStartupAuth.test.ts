@@ -1,24 +1,13 @@
-import { afterEach, expect, mock, test } from 'bun:test'
-import axios from 'axios'
+import { expect, test } from 'bun:test'
 
-import { clearVerbooModelsCache } from '../api/verbooModels.js'
-import { checkVerbooModels } from './verbooStartupAuth.js'
+import { getCLIEntitlementDeniedMessage } from './cliEntitlement.js'
 
-const originalGet = axios.get
-
-afterEach(() => {
-  axios.get = originalGet
-  clearVerbooModelsCache()
-})
-
-test('classifies a model timeout as unavailable rather than an empty account', async () => {
-  axios.get = mock(async () => {
-    throw new Error('timeout of 10000ms exceeded')
-  }) as typeof axios.get
-
-  await expect(checkVerbooModels('access-token')).resolves.toEqual({
-    kind: 'unavailable',
-    reason: 'Não foi possível consultar os modelos.',
-    models: [],
-  })
+test('explains each denied CLI entitlement without referring to router models', () => {
+  expect(getCLIEntitlementDeniedMessage('past_due')).toContain(
+    'pagamento pendente',
+  )
+  expect(getCLIEntitlementDeniedMessage('expired')).toContain('expirou')
+  expect(getCLIEntitlementDeniedMessage('subscription_required')).toContain(
+    'assinatura Verboo Code ativa',
+  )
 })

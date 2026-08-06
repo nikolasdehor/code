@@ -28,6 +28,15 @@ import {
 } from '../../services/analytics/index.js'
 import { clearRouterRateLimit } from '../../services/routerRateLimit.js'
 import {
+  fetchCodexModels,
+  getCachedCodexModels,
+} from '../../services/api/codexModels.js'
+import {
+  fetchVerbooModels,
+  getCachedVerbooModels,
+} from '../../services/api/verbooModels.js'
+import { isVerbooMode } from '../../constants/oauth.js'
+import {
   getAdditionalModelOptionsCacheScope,
   resolveProviderRequest,
 } from '../../services/api/providerConfig.js'
@@ -55,12 +64,15 @@ import {
   isOpus1mMergeEnabled,
   parseUserSpecifiedModel,
   renderDefaultModelSetting,
+  saveLastVerbooModel,
 } from '../../utils/model/model.js'
 import { isModelAllowed } from '../../utils/model/modelAllowlist.js'
 import { validateModel } from '../../utils/model/validateModel.js'
 import { getLocalOpenAICompatibleProviderLabel } from '../../utils/providerDiscovery.js'
 import { isEssentialTrafficOnly } from '../../utils/privacyLevel.js'
 import { parseCustomHeadersEnv } from '../../utils/providerCustomHeaders.js'
+import { getClaudeAIOAuthTokensAsync } from '../../utils/auth.js'
+import { readCodexCredentialsAsync } from '../../utils/codexCredentials.js'
 import {
   getActiveOpenAIModelOptionsCache,
   getActiveProviderProfile,
@@ -759,6 +771,176 @@ function ShowModelAndClose({
   return null
 }
 
+type UnlockedModel = {
+  id: string
+  displayName: string
+  description?: string
+  contextWindow?: number
+}
+
+async function loadUnlockedModels(force = false): Promise<UnlockedModel[]> {
+  let verboo = getCachedVerbooModels()
+  if (force || !verboo) {
+    const tokens = await getClaudeAIOAuthTokensAsync()
+    if (!tokens?.accessToken) {
+      throw new Error('Sessão Verboo ausente. Execute /login.')
+    }
+    verboo = await fetchVerbooModels(tokens.accessToken, { force })
+  }
+  const models: UnlockedModel[] = verboo.map(model => ({
+    id: model.id,
+    displayName: model.displayName ?? model.id,
+    description: model.description,
+    contextWindow: model.contextWindow,
+  }))
+
+  const cachedCodex = getCachedCodexModels()
+  if (cachedCodex && !force) {
+    const seen = new Set(models.map(model => model.id))
+    for (const model of cachedCodex) {
+      if (!seen.has(model.id)) models.push(model)
+    }
+  } else if (await readCodexCredentialsAsync()) {
+    try {
+      const codex = await fetchCodexModels({ force })
+      const seen = new Set(models.map(model => model.id))
+      for (const model of codex) {
+        if (!seen.has(model.id)) models.push(model)
+      }
+    } catch {
+      // Codex is an optional model expansion. It must never hide or block the
+      // regular Verboo catalog when its credentials/API are unavailable.
+    }
+  }
+  return models
+}
+
+function unlockedModelOptions(models: UnlockedModel[]): ModelOption[] {
+  return models.map(model => ({
+    value: model.id,
+    label: model.displayName,
+    description:
+      model.description ??
+      (model.contextWindow
+        ? `${Math.round(model.contextWindow / 1000)}K context`
+        : model.id),
+  }))
+}
+
+function VerbooModelPicker({
+  models,
+  onDone,
+}: {
+  models: UnlockedModel[]
+  onDone: (result?: string, options?: { display?: CommandResultDisplay }) => void
+}) {
+  const mainLoopModel = useAppState((s: AppState) => s.mainLoopModel)
+  const mainLoopModelForSession = useAppState(
+    (s: AppState) => s.mainLoopModelForSession,
+  )
+  const setAppState = useSetAppState()
+  const initialModel = models.some(model => model.id === mainLoopModel)
+    ? mainLoopModel
+    : (models[0]?.id ?? null)
+
+  return (
+    <ModelPicker
+      initial={initialModel}
+      sessionModel={mainLoopModelForSession}
+      optionsOverride={unlockedModelOptions(models)}
+      isStandaloneCommand
+      headerText="Modelos disponíveis no Verboo Code"
+      onCancel={() => onDone('Modelo mantido.', { display: 'system' })}
+      onSelect={model => {
+        if (!model || !models.some(candidate => candidate.id === model)) {
+          onDone('Selecione um modelo disponível no catálogo.', {
+            display: 'system',
+          })
+          return
+        }
+        saveLastVerbooModel(model)
+        setAppState(prev => ({
+          ...prev,
+          mainLoopModel: model,
+          mainLoopModelForSession: null,
+        }))
+        onDone(`Modelo alterado para ${chalk.bold(model)}.`)
+      }}
+    />
+  )
+}
+
+async function callVerbooModel(
+  onDone: (result?: string, options?: { display?: CommandResultDisplay }) => void,
+  context: Parameters<LocalJSXCommandCall>[1],
+  trimmedArgs: string,
+): Promise<React.ReactNode> {
+  if (COMMON_INFO_ARGS.includes(trimmedArgs)) {
+    return <ShowModelAndClose onDone={onDone} />
+  }
+  if (COMMON_HELP_ARGS.includes(trimmedArgs)) {
+    onDone(
+      'Use /model para listar os modelos liberados, /model refresh para atualizar o catálogo ou /model <id> para selecionar um ID exato. /codex adiciona os modelos Codex.',
+      { display: 'system' },
+    )
+    return
+  }
+  if (trimmedArgs === 'refresh') {
+    try {
+      const models = await loadUnlockedModels(true)
+      onDone(`Catálogo atualizado: ${models.length} modelo(s).`, {
+        display: 'system',
+      })
+    } catch (error) {
+      onDone(`Não foi possível atualizar o catálogo: ${(error as Error).message}`, {
+        display: 'system',
+      })
+    }
+    return
+  }
+  if (trimmedArgs) {
+    try {
+      const models = await loadUnlockedModels()
+      const model = models.find(candidate => candidate.id === trimmedArgs)
+      if (!model) {
+        throw new Error(
+          `O modelo '${trimmedArgs}' não está disponível. Execute /model para escolher um modelo liberado.`,
+        )
+      }
+      const current = context.getAppState()
+      clearRouterRateLimitIfModelChanged(
+        current.mainLoopModel,
+        current.mainLoopModelForSession,
+        model.id,
+      )
+      saveLastVerbooModel(model.id)
+      context.setAppState(prev => ({
+        ...prev,
+        mainLoopModel: model.id,
+        mainLoopModelForSession: null,
+      }))
+      onDone(`Modelo alterado para ${chalk.bold(model.id)}.`)
+    } catch (error) {
+      onDone((error as Error).message, { display: 'system' })
+    }
+    return
+  }
+
+  try {
+    const models = await loadUnlockedModels()
+    if (models.length === 0) {
+      onDone('Nenhum modelo está disponível para esta conta.', {
+        display: 'system',
+      })
+      return
+    }
+    return <VerbooModelPicker models={models} onDone={onDone} />
+  } catch (error) {
+    onDone((error as Error).message, { display: 'system' })
+    return
+  }
+}
+
 async function refreshModelsAndSummarize(): Promise<string> {
   const discoveryContext = await loadModelDiscoveryContext()
 
@@ -827,8 +1009,12 @@ async function refreshModelsAndSummarize(): Promise<string> {
   }
 }
 
-export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
+export const call: LocalJSXCommandCall = async (onDone, context, args) => {
   const trimmedArgs = args?.trim() || ''
+
+  if (isVerbooMode()) {
+    return callVerbooModel(onDone, context, trimmedArgs)
+  }
 
   if (COMMON_INFO_ARGS.includes(trimmedArgs)) {
     logEvent('tengu_model_command_inline_help', {

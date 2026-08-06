@@ -178,12 +178,10 @@ describe('detectProvider — Verboo isolation', () => {
     expect(result.model).toBe('early-adopters/qwen3.6-27b')
   })
 
-  test('throws purchase message when models were not loaded', async () => {
+  test('keeps the Verboo fallback when the catalog was not loaded', async () => {
     const { detectProvider } = await importStartupScreenWithModels([])
 
-    expect(() => detectProvider()).toThrow(
-      'Compre acesso em https://code.verboo.ai',
-    )
+    expect(detectProvider().model).toBe('verboo-default')
   })
 })
 

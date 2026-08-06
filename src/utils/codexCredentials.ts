@@ -268,6 +268,7 @@ export function clearCodexCredentials(): {
 
 export async function refreshCodexAccessTokenIfNeeded(options?: {
   force?: boolean
+  ignoreEnvironment?: boolean
 }): Promise<{
   refreshed: boolean
   credentials?: CodexCredentialBlob
@@ -276,7 +277,7 @@ export async function refreshCodexAccessTokenIfNeeded(options?: {
     return { refreshed: false }
   }
 
-  if (process.env.CODEX_API_KEY?.trim()) {
+  if (!options?.ignoreEnvironment && process.env.CODEX_API_KEY?.trim()) {
     return { refreshed: false }
   }
 
@@ -288,6 +289,7 @@ export async function refreshCodexAccessTokenIfNeeded(options?: {
   if (!current.refreshToken) {
     return { refreshed: false, credentials: current }
   }
+  const refreshToken = current.refreshToken
 
   if (!options?.force && !shouldRefreshCodexToken(current)) {
     return { refreshed: false, credentials: current }
@@ -308,7 +310,7 @@ export async function refreshCodexAccessTokenIfNeeded(options?: {
       const body = new URLSearchParams({
         client_id: getCodexOAuthClientId(),
         grant_type: 'refresh_token',
-        refresh_token: current.refreshToken,
+        refresh_token: refreshToken,
       })
 
       const { signal, cleanup } = createCombinedAbortSignal(undefined, {

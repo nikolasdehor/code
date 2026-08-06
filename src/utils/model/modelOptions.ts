@@ -44,6 +44,7 @@ import { getCachedMiniMaxModelOptions, isMiniMaxProvider } from './minimaxModels
 import { getCachedXiaomiMimoModelOptions, isXiaomiMimoProvider } from './xiaomi-mimoModels.js'
 import { getAntModels } from './antModels.js'
 import { isVerbooMode } from '../../constants/oauth.js'
+import { getCachedCodexModels } from '../../services/api/codexModels.js'
 import { getCachedVerbooModels } from '../../services/api/verbooModels.js'
 
 // @[MODEL LAUNCH]: Update all the available and default model option strings below.
@@ -403,9 +404,19 @@ function getCopilotModelOptions(): ModelOption[] {
 
 function getModelOptionsBase(fastMode = false): ModelOption[] {
   if (isVerbooMode()) {
-    const cached = getCachedVerbooModels()
-    if (cached && cached.length > 0) {
-      return cached.map(m => ({
+    const verboo = (getCachedVerbooModels() ?? []).map(m => ({
+      value: m.id,
+      label: m.displayName ?? m.id,
+      description:
+        m.description ??
+        (m.contextWindow
+          ? `${Math.round(m.contextWindow / 1000)}K context`
+          : m.id),
+    }))
+    const existing = new Set(verboo.map(model => model.value))
+    const codex = (getCachedCodexModels() ?? [])
+      .filter(model => !existing.has(model.id))
+      .map(m => ({
         value: m.id,
         label: m.displayName ?? m.id,
         description:
@@ -414,6 +425,9 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
             ? `${Math.round(m.contextWindow / 1000)}K context`
             : m.id),
       }))
+    const cached = [...verboo, ...codex]
+    if (cached.length > 0) {
+      return cached
     }
     const currentModel =
       getUserSpecifiedModelSetting() ?? getInitialMainLoopModel()

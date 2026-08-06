@@ -58,7 +58,10 @@ import { getInitialFastModeSetting, isFastModeEnabled, prefetchFastModeStatus, r
 import { applyConfigEnvironmentVariables } from './utils/managedEnv.js';
 import { createSystemMessage, createUserMessage, removeInterruptedMessage } from './utils/messages.js';
 import { getPlatform } from './utils/platform.js';
+import { fetchCodexModels } from './services/api/codexModels.js';
 import { fetchVerbooModels } from './services/api/verbooModels.js';
+import { assertCLIEntitlement } from './services/oauth/cliEntitlement.js';
+import { readCodexCredentialsAsync } from './utils/codexCredentials.js';
 import { getBaseRenderOptions } from './utils/renderOptions.js';
 import { getSessionIngressAuthToken } from './utils/sessionIngressAuth.js';
 import { settingsChangeDetector } from './utils/settings/changeDetector.js';
@@ -997,9 +1000,7 @@ async function run(): Promise<CommanderCommand> {
     return Number.isFinite(n) ? n : undefined;
   }).hideHelp()).option('--from-pr [value]', 'Resume a session linked to a PR by PR number/URL, or open interactive picker with optional search term', value => value || true).option('--no-session-persistence', 'Disable session persistence - sessions will not be saved to disk and cannot be resumed (only works with --print)').addOption(new Option('--resume-session-at <message id>', 'When resuming, only messages up to and including the assistant message with <message.id> (use with --resume in print mode)').argParser(String).hideHelp()).addOption(new Option('--rewind-files <user-message-id>', 'Restore files to state at the specified user message and exit (requires --resume)').hideHelp())
   // @[MODEL LAUNCH]: Update the example model ID in the --model help text.
-  // VERBOO-BRAND: provider list lista "verboo" como default (alias Anthropic-
-  // compatible). Outros providers permanecem aceitos como aliases para sync.
-  .option('--model <model>', `Model for the current session. Provide an alias for the latest model (e.g. 'sonnet' or 'opus') or a model's full name (e.g. 'claude-sonnet-4-6').`).option('--provider <provider>', `AI provider to use (verboo, openai, gemini, github, bedrock, vertex, ollama). Reads API keys from environment variables.`).addOption(new Option('--effort <level>', `Effort level for the current session (low, medium, high, max)`).argParser((rawValue: string) => {
+  .option('--model <model>', `Model ID returned by /model or --list-models.`).addOption(new Option('--effort <level>', `Effort level for the current session (low, medium, high, max)`).argParser((rawValue: string) => {
     const value = rawValue.toLowerCase();
     const allowed = ['low', 'medium', 'high', 'max'];
     if (!allowed.includes(value)) {
@@ -1015,25 +1016,38 @@ async function run(): Promise<CommanderCommand> {
   .option('--plugin-dir <path>', 'Load plugins from a directory for this session only (repeatable: --plugin-dir A --plugin-dir B)', (val: string, prev: string[]) => [...prev, val], [] as string[]).option('--disable-slash-commands', 'Disable all skills', () => true).option('--chrome', 'Enable Verboo in Chrome integration').option('--no-chrome', 'Disable Verboo in Chrome integration').option('--file <specs...>', 'File resources to download at startup. Format: file_id:relative_path (e.g., --file file_abc:doc.txt file_def:img.png)').option('--list-models', 'List available Verboo models and exit').action(async (prompt, options) => {
     profileCheckpoint('action_handler_start');
 
-    // --list-models: fetch and display available Verboo models, then exit
+    // --list-models: regular Verboo models plus optional unlocked Codex models.
     if ((options as { listModels?: boolean }).listModels) {
       try {
+        await assertCLIEntitlement();
         const tokens = await getClaudeAIOAuthTokensAsync();
-        if (!tokens?.accessToken) {
-          process.stderr.write('Error: Not authenticated. Run `verboo` first to log in.\n');
-          process.exit(1);
-        }
-        const models = await fetchVerbooModels(tokens.accessToken);
+        if (!tokens?.accessToken) throw new Error('Sessão Verboo ausente.');
+        const verbooModels = await fetchVerbooModels(tokens.accessToken);
+        const codexModels = await readCodexCredentialsAsync()
+          ? await fetchCodexModels().catch(() => [])
+          : [];
+        const models = [
+          ...verbooModels.map(model => ({
+            id: model.id,
+            displayName: model.displayName ?? model.id,
+            contextWindow: model.contextWindow,
+            description: model.description,
+            defaultReasoningLevel: model.reasoning?.defaultEffort,
+            supportedReasoningLevels: model.reasoning?.effortLevels.map(effort => ({ effort })) ?? []
+          })),
+          ...codexModels.filter(model => !verbooModels.some(candidate => candidate.id === model.id))
+        ];
         if (!models || models.length === 0) {
           process.stdout.write('[]\n');
           process.exit(0);
         }
         const output = models.map(m => ({
           id: m.id,
-          displayName: m.displayName || null,
-          contextWindow: m.contextWindow || null,
-          maxOutputTokens: m.maxOutputTokens || null,
-          description: m.description || null
+          displayName: m.displayName,
+          contextWindow: m.contextWindow ?? null,
+          description: m.description ?? null,
+          defaultReasoningLevel: m.defaultReasoningLevel ?? null,
+          supportedReasoningLevels: m.supportedReasoningLevels.map(level => level.effort)
         }));
         process.stdout.write(JSON.stringify(output, null, 2) + '\n');
         process.exit(0);
