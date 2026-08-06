@@ -4,6 +4,7 @@ import {
   getCachedVerbooModels,
   getVerbooModelMeta,
 } from './verbooModels.js'
+import { getClaudeNativeModel } from './claudeNativeModels.js'
 
 /**
  * Vision delegation: guarantees that no image block ever reaches a model
@@ -58,6 +59,10 @@ export function modelSupportsVision(modelId: string): boolean | undefined {
     const meta = getVerbooModelMeta(candidate)
     if (meta && typeof meta.vision === 'boolean') {
       return meta.vision
+    }
+    const claude = getClaudeNativeModel(candidate)
+    if (claude && typeof claude.vision === 'boolean') {
+      return claude.vision
     }
   }
   return undefined

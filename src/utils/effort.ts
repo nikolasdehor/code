@@ -14,6 +14,10 @@ import {
   getCodexReasoningLevels,
 } from '../services/api/codexModels.js'
 import {
+  getClaudeNativeModel,
+  getClaudeNativeReasoningEffort,
+} from '../services/api/claudeNativeModels.js'
+import {
   getVerbooModelReasoning,
   getVerbooReasoningEffort,
 } from '../services/api/verbooModels.js'
@@ -44,6 +48,8 @@ export function modelSupportsEffort(model: string): boolean {
   if (isVerbooMode()) {
     return getCodexModel(model)
       ? getCodexReasoningLevels(model).length > 0
+      : getClaudeNativeModel(model)
+        ? getClaudeNativeModel(model)!.supportedReasoningLevels.length > 0
       : getVerbooModelReasoning(model) !== undefined
   }
   const m = model.toLowerCase()
@@ -110,6 +116,8 @@ export function getAvailableEffortLevels(model: string): string[] {
   if (isVerbooMode()) {
     return getCodexModel(model)
       ? getCodexReasoningLevels(model)
+      : getClaudeNativeModel(model)
+        ? (getClaudeNativeModel(model)?.supportedReasoningLevels ?? [])
       : (getVerbooModelReasoning(model)?.effortLevels ?? [])
   }
   if (!modelSupportsEffort(model)) {
@@ -249,6 +257,7 @@ export function resolveAppliedEffort(
   }
   if (isVerbooMode()) {
     const modelInfo = getCodexModel(model)
+    const claudeModel = getClaudeNativeModel(model)
     const selected = envOverride ?? appStateEffortValue
     if (selected === undefined) return undefined
     if (modelInfo) {
@@ -256,6 +265,12 @@ export function resolveAppliedEffort(
       return typeof selected === 'string'
         ? getCodexReasoningEffort(model, selected) ?? modelInfo.defaultReasoningLevel
         : modelInfo.defaultReasoningLevel
+    }
+    if (claudeModel) {
+      if (claudeModel.supportedReasoningLevels.length === 0) return undefined
+      return typeof selected === 'string'
+        ? getClaudeNativeReasoningEffort(model, selected)
+        : undefined
     }
     const reasoning = getVerbooModelReasoning(model)
     if (!reasoning) return undefined
@@ -311,9 +326,11 @@ export function getEffortSuffix(
   const resolved = resolveAppliedEffort(model, effortValue)
   if (isVerbooMode()) {
     const modelInfo = getCodexModel(model)
+    const claudeModel = getClaudeNativeModel(model)
     const verbooReasoning = getVerbooModelReasoning(model)
     if (
       (!modelInfo || modelInfo.supportedReasoningLevels.length === 0) &&
+      (!claudeModel || claudeModel.supportedReasoningLevels.length === 0) &&
       !verbooReasoning
     ) return ''
     const displayed =

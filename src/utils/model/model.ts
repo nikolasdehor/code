@@ -8,6 +8,7 @@
 import { getMainLoopModelOverride } from '../../bootstrap/state.js'
 import { isVerbooMode } from '../../constants/oauth.js'
 import { getCachedCodexModels } from '../../services/api/codexModels.js'
+import { getCachedClaudeNativeModels } from '../../services/api/claudeNativeModels.js'
 import { getCachedVerbooModels } from '../../services/api/verbooModels.js'
 import { getGlobalConfig, saveGlobalConfig } from '../config.js'
 import {
@@ -49,6 +50,8 @@ export function isClaudeModelLike(model: unknown): boolean {
   const normalized = model.trim().toLowerCase()
   if (!normalized) return false
   const withoutContext = normalized.replace(/\[1m]$/i, '').trim()
+  // A Claude model may be restored only when the user explicitly selected it
+  // above. It is never promoted to an automatic default.
   return (
     withoutContext.includes('claude') ||
     withoutContext === 'sonnet' ||
@@ -62,16 +65,24 @@ export function isClaudeModelLike(model: unknown): boolean {
 export function getDefaultVerbooModel(): ModelName {
   const verbooModels = getCachedVerbooModels() ?? []
   const codexModels = getCachedCodexModels() ?? []
+  const claudeModels = getCachedClaudeNativeModels() ?? []
 
   const lastModel = getGlobalConfig().lastVerbooModel
   if (
     lastModel &&
-    [...verbooModels, ...codexModels].some(model => model.id === lastModel)
+    [...verbooModels, ...codexModels, ...claudeModels].some(
+      model => model.id === lastModel,
+    )
   ) {
     return lastModel
   }
 
-  return verbooModels[0]?.id ?? codexModels[0]?.id ?? lastModel ?? 'verboo-default'
+  return (
+    verbooModels[0]?.id ??
+    codexModels[0]?.id ??
+    lastModel ??
+    'verboo-default'
+  )
 }
 
 export function saveLastVerbooModel(model: string): void {
@@ -96,6 +107,7 @@ function getVerbooSpecifiedModel(
   const cached = [
     ...(getCachedVerbooModels() ?? []),
     ...(getCachedCodexModels() ?? []),
+    ...(getCachedClaudeNativeModels() ?? []),
   ]
   if (cached.length > 0) {
     return cached.some(m => m.id === modelWithoutContext)
@@ -250,7 +262,11 @@ export function getMainLoopModel(): ModelName {
   if (
     isVerbooMode() &&
     resolved &&
-    [...(getCachedVerbooModels() ?? []), ...(getCachedCodexModels() ?? [])].some(
+    [
+      ...(getCachedVerbooModels() ?? []),
+      ...(getCachedCodexModels() ?? []),
+      ...(getCachedClaudeNativeModels() ?? []),
+    ].some(
       model => model.id === resolved,
     )
   ) {

@@ -2,6 +2,7 @@
 import { CONTEXT_1M_BETA_HEADER } from '../constants/betas.js'
 import { isVerbooMode } from '../constants/oauth.js'
 import { getVerbooModelMeta } from '../services/api/verbooModels.js'
+import { getClaudeNativeModel } from '../services/api/claudeNativeModels.js'
 import { getGlobalConfig } from './config.js'
 import { isEnvTruthy } from './envUtils.js'
 import { resolveModelRuntimeLimits } from '../integrations/runtimeMetadata.js'
@@ -107,6 +108,10 @@ export function getContextWindowForModel(
     const verbooMeta = getVerbooModelMeta(model)
     if (verbooMeta?.contextWindow) {
       return verbooMeta.contextWindow
+    }
+    const claudeMeta = getClaudeNativeModel(model)
+    if (claudeMeta?.contextWindow) {
+      return claudeMeta.contextWindow
     }
   }
 

@@ -15,7 +15,8 @@ import { getCachedNvidiaNimModelOptions, isNvidiaNimProvider } from './nvidiaNim
 import { getCachedMiniMaxModelOptions, isMiniMaxProvider } from './minimaxModels.js'
 import { isVerbooMode } from '../../constants/oauth.js'
 import { getCachedVerbooModels } from '../../services/api/verbooModels.js'
-import { isClaudeModelLike } from './model.js'
+import { getCachedCodexModels } from '../../services/api/codexModels.js'
+import { getCachedClaudeNativeModels } from '../../services/api/claudeNativeModels.js'
 
 // Cache valid models to avoid repeated API calls
 const validModelCache = new Map<string, boolean>()
@@ -35,21 +36,17 @@ export async function validateModel(
 
   // For Verboo, only allow models returned by the /models endpoint
   if (isVerbooMode()) {
-    if (isClaudeModelLike(normalizedModel)) {
-      return {
-        valid: false,
-        error: `Modelo '${normalizedModel}' não pode ser usado no Verboo Code.`,
-      }
-    }
     const verbooModels = getCachedVerbooModels()
-    if (verbooModels && verbooModels.length > 0) {
-      const found = verbooModels.some(m => m.id === normalizedModel)
-      if (found) {
-        validModelCache.set(normalizedModel, true)
-        return { valid: true }
-      }
+    const codexModels = getCachedCodexModels() ?? []
+    const claudeModels = getCachedClaudeNativeModels() ?? []
+    const unlocked = [...(verbooModels ?? []), ...codexModels, ...claudeModels]
+    if (unlocked.some(model => model.id === normalizedModel)) {
+      validModelCache.set(normalizedModel, true)
+      return { valid: true }
+    }
+    if (unlocked.length > 0) {
       const MAX_SHOWN = 5
-      const names = verbooModels.map(m => m.id)
+      const names = unlocked.map(model => model.id)
       const shown = names.slice(0, MAX_SHOWN).join(', ')
       const suffix = names.length > MAX_SHOWN ? ` e mais ${names.length - MAX_SHOWN}` : ''
       return {

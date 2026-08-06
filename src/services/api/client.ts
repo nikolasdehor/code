@@ -34,8 +34,21 @@ import {
 import { isVerbooMode, VERBOO_ROUTER_URL } from '../../constants/oauth.js'
 import { assertCLIEntitlement } from '../oauth/cliEntitlement.js'
 import { assertCodexModelAvailable, getCodexModel } from './codexModels.js'
+import {
+  assertClaudeNativeModelAvailable,
+  getClaudeNativeModel,
+} from './claudeNativeModels.js'
 import { getCachedVerbooModels } from './verbooModels.js'
 import { DEFAULT_CODEX_BASE_URL } from './providerConfig.js'
+import {
+  CLAUDE_NATIVE_API_BASE_URL,
+  CLAUDE_NATIVE_OAUTH_BETA,
+} from './claudeNativeConfig.js'
+import {
+  hasCurrentClaudeRiskAcceptance,
+  readClaudeNativeCredentialsAsync,
+  refreshClaudeNativeAccessTokenIfNeeded,
+} from '../../utils/claudeNativeCredentials.js'
 import { isDebugToStdErr, logForDebugging } from '../../utils/debug.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import {
@@ -335,6 +348,67 @@ export async function getAnthropicClient({
           apiKey: '',
         },
       }) as unknown as Anthropic
+    }
+
+    if (getClaudeNativeModel(requestedModel)) {
+      await assertClaudeNativeModelAvailable(requestedModel)
+      const refreshed = await refreshClaudeNativeAccessTokenIfNeeded()
+      const credentials =
+        refreshed.credentials ?? (await readClaudeNativeCredentialsAsync())
+      if (!credentials || !hasCurrentClaudeRiskAcceptance(credentials)) {
+        throw new Error(
+          'Login Claude ausente ou aceite de risco desatualizado. Execute `/claude login`.',
+        )
+      }
+
+      const safeHeaders: Record<string, string> = {}
+      for (const [key, value] of Object.entries(defaultHeaders)) {
+        const lower = key.toLowerCase()
+        if (
+          lower === 'authorization' ||
+          lower === 'x-api-key' ||
+          lower === 'api-key'
+        ) {
+          continue
+        }
+        safeHeaders[key] = value
+      }
+      const inheritedBetas = safeHeaders['anthropic-beta']
+        ?.split(',')
+        .map(value => value.trim())
+        .filter(Boolean) ?? []
+      safeHeaders['anthropic-beta'] = Array.from(
+        new Set([...inheritedBetas, CLAUDE_NATIVE_OAUTH_BETA]),
+      ).join(',')
+
+      const baseFetch = resolvedFetch ?? globalThis.fetch
+      const nativeFetch: ClientOptions['fetch'] = async (input, init) => {
+        const response = await baseFetch(input, init)
+        if (response.status !== 401) return response
+        try {
+          const retry = await refreshClaudeNativeAccessTokenIfNeeded({
+            force: true,
+          })
+          if (!retry.credentials?.accessToken) return response
+          const retryHeaders = new Headers(init?.headers)
+          retryHeaders.set(
+            'Authorization',
+            `Bearer ${retry.credentials.accessToken}`,
+          )
+          return await baseFetch(input, { ...init, headers: retryHeaders })
+        } catch {
+          return response
+        }
+      }
+
+      return new Anthropic({
+        ...ARGS,
+        baseURL: CLAUDE_NATIVE_API_BASE_URL,
+        apiKey: null,
+        authToken: credentials.accessToken,
+        defaultHeaders: safeHeaders,
+        fetch: nativeFetch,
+      })
     }
 
     throw new Error(

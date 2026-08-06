@@ -59,9 +59,11 @@ import { applyConfigEnvironmentVariables } from './utils/managedEnv.js';
 import { createSystemMessage, createUserMessage, removeInterruptedMessage } from './utils/messages.js';
 import { getPlatform } from './utils/platform.js';
 import { fetchCodexModels } from './services/api/codexModels.js';
+import { fetchClaudeNativeModels } from './services/api/claudeNativeModels.js';
 import { fetchVerbooModels } from './services/api/verbooModels.js';
 import { assertCLIEntitlement } from './services/oauth/cliEntitlement.js';
 import { readCodexCredentialsAsync } from './utils/codexCredentials.js';
+import { readClaudeNativeCredentialsAsync } from './utils/claudeNativeCredentials.js';
 import { getBaseRenderOptions } from './utils/renderOptions.js';
 import { getSessionIngressAuthToken } from './utils/sessionIngressAuth.js';
 import { settingsChangeDetector } from './utils/settings/changeDetector.js';
@@ -1016,7 +1018,7 @@ async function run(): Promise<CommanderCommand> {
   .option('--plugin-dir <path>', 'Load plugins from a directory for this session only (repeatable: --plugin-dir A --plugin-dir B)', (val: string, prev: string[]) => [...prev, val], [] as string[]).option('--disable-slash-commands', 'Disable all skills', () => true).option('--chrome', 'Enable Verboo in Chrome integration').option('--no-chrome', 'Disable Verboo in Chrome integration').option('--file <specs...>', 'File resources to download at startup. Format: file_id:relative_path (e.g., --file file_abc:doc.txt file_def:img.png)').option('--list-models', 'List available Verboo models and exit').action(async (prompt, options) => {
     profileCheckpoint('action_handler_start');
 
-    // --list-models: regular Verboo models plus optional unlocked Codex models.
+    // Verboo is always first. Optional provider catalogs only add non-duplicate IDs.
     if ((options as { listModels?: boolean }).listModels) {
       try {
         await assertCLIEntitlement();
@@ -1026,8 +1028,23 @@ async function run(): Promise<CommanderCommand> {
         const codexModels = await readCodexCredentialsAsync()
           ? await fetchCodexModels().catch(() => [])
           : [];
+        const claudeModels = await readClaudeNativeCredentialsAsync()
+          ? await fetchClaudeNativeModels().catch(() => [])
+          : [];
+        const seen = new Set(verbooModels.map(model => model.id));
+        const uniqueCodex = codexModels.filter(model => {
+          if (seen.has(model.id)) return false;
+          seen.add(model.id);
+          return true;
+        });
+        const uniqueClaude = claudeModels.filter(model => {
+          if (seen.has(model.id)) return false;
+          seen.add(model.id);
+          return true;
+        });
         const models = [
           ...verbooModels.map(model => ({
+            provider: 'verboo',
             id: model.id,
             displayName: model.displayName ?? model.id,
             contextWindow: model.contextWindow,
@@ -1035,13 +1052,21 @@ async function run(): Promise<CommanderCommand> {
             defaultReasoningLevel: model.reasoning?.defaultEffort,
             supportedReasoningLevels: model.reasoning?.effortLevels.map(effort => ({ effort })) ?? []
           })),
-          ...codexModels.filter(model => !verbooModels.some(candidate => candidate.id === model.id))
+          ...uniqueCodex.map(model => ({ ...model, provider: 'codex' })),
+          ...uniqueClaude.map(model => ({
+            ...model,
+            provider: 'claude',
+            description: undefined,
+            defaultReasoningLevel: undefined,
+            supportedReasoningLevels: model.supportedReasoningLevels.map(effort => ({ effort }))
+          }))
         ];
         if (!models || models.length === 0) {
           process.stdout.write('[]\n');
           process.exit(0);
         }
         const output = models.map(m => ({
+          provider: m.provider,
           id: m.id,
           displayName: m.displayName,
           contextWindow: m.contextWindow ?? null,

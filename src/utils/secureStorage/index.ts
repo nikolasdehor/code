@@ -26,6 +26,22 @@ export interface SecureStorageData {
     lastRefreshAt?: number
     lastRefreshFailureAt?: number
   }
+  claudeNative?: {
+    accessToken: string
+    refreshToken?: string
+    expiresAt?: number
+    scopes: string[]
+    accountId: string
+    email?: string
+    organizationId?: string
+    riskAcceptance: {
+      version: number
+      acceptedAt: string
+      accountId: string
+    }
+    lastRefreshAt?: number
+    lastRefreshFailureAt?: number
+  }
   mcpOAuth?: Record<
     string,
     {

@@ -45,6 +45,7 @@ import { getCachedXiaomiMimoModelOptions, isXiaomiMimoProvider } from './xiaomi-
 import { getAntModels } from './antModels.js'
 import { isVerbooMode } from '../../constants/oauth.js'
 import { getCachedCodexModels } from '../../services/api/codexModels.js'
+import { getCachedClaudeNativeModels } from '../../services/api/claudeNativeModels.js'
 import { getCachedVerbooModels } from '../../services/api/verbooModels.js'
 
 // @[MODEL LAUNCH]: Update all the available and default model option strings below.
@@ -425,7 +426,15 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
             ? `${Math.round(m.contextWindow / 1000)}K context`
             : m.id),
       }))
-    const cached = [...verboo, ...codex]
+    for (const model of codex) existing.add(model.value)
+    const claude = (getCachedClaudeNativeModels() ?? [])
+      .filter(model => !existing.has(model.id))
+      .map(model => ({
+        value: model.id,
+        label: model.displayName,
+        description: `${model.contextWindow ? `${Math.round(model.contextWindow / 1000)}K context` : model.id} · via Claude nativo`,
+      }))
+    const cached = [...verboo, ...codex, ...claude]
     if (cached.length > 0) {
       return cached
     }

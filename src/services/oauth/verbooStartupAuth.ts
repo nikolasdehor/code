@@ -34,10 +34,18 @@ import {
   fetchCodexModels,
 } from '../api/codexModels.js'
 import {
+  clearClaudeNativeModelsCache,
+  fetchClaudeNativeModels,
+} from '../api/claudeNativeModels.js'
+import {
   clearVerbooModelsCache,
   fetchVerbooModels,
 } from '../api/verbooModels.js'
 import { readCodexCredentialsAsync } from '../../utils/codexCredentials.js'
+import {
+  hasCurrentClaudeRiskAcceptance,
+  readClaudeNativeCredentialsAsync,
+} from '../../utils/claudeNativeCredentials.js'
 import {
   fetchVerbooTermsStatus,
   formatTermsDeadline,
@@ -284,6 +292,20 @@ async function primeCodexCatalogIfAuthenticated(): Promise<void> {
   }
 }
 
+async function primeClaudeCatalogIfAuthenticated(): Promise<void> {
+  const credentials = await readClaudeNativeCredentialsAsync()
+  if (!credentials || !hasCurrentClaudeRiskAcceptance(credentials)) return
+  clearClaudeNativeModelsCache()
+  try {
+    await fetchClaudeNativeModels({ force: true })
+  } catch (error) {
+    logForDebugging(
+      `[VerbooStartup] Não foi possível atualizar o catálogo Claude opcional: ${errorMessage(error)}`,
+      { level: 'warn' },
+    )
+  }
+}
+
 async function loadVerbooCatalog(accessToken: string): Promise<void> {
   clearVerbooModelsCache()
   const models = await fetchVerbooModels(accessToken, { force: true })
@@ -374,6 +396,7 @@ export async function ensureVerbooAuthenticated(
     await ensureCLIEntitlement(session.tokens.accessToken)
     await loadVerbooCatalog(session.tokens.accessToken)
     await primeCodexCatalogIfAuthenticated()
+    await primeClaudeCatalogIfAuthenticated()
     validated = true
     return
   }
@@ -391,6 +414,7 @@ export async function ensureVerbooAuthenticated(
     await ensureCLIEntitlement(stored.accessToken)
     await loadVerbooCatalog(stored.accessToken)
     await primeCodexCatalogIfAuthenticated()
+    await primeClaudeCatalogIfAuthenticated()
     validated = true
     return
   }
@@ -443,5 +467,6 @@ export async function ensureVerbooAuthenticated(
   await ensureCLIEntitlement(accessToken)
   await loadVerbooCatalog(accessToken)
   await primeCodexCatalogIfAuthenticated()
+  await primeClaudeCatalogIfAuthenticated()
   validated = true
 }

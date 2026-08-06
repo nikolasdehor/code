@@ -32,6 +32,10 @@ import {
   getCachedCodexModels,
 } from '../../services/api/codexModels.js'
 import {
+  fetchClaudeNativeModels,
+  getCachedClaudeNativeModels,
+} from '../../services/api/claudeNativeModels.js'
+import {
   fetchVerbooModels,
   getCachedVerbooModels,
 } from '../../services/api/verbooModels.js'
@@ -73,6 +77,7 @@ import { isEssentialTrafficOnly } from '../../utils/privacyLevel.js'
 import { parseCustomHeadersEnv } from '../../utils/providerCustomHeaders.js'
 import { getClaudeAIOAuthTokensAsync } from '../../utils/auth.js'
 import { readCodexCredentialsAsync } from '../../utils/codexCredentials.js'
+import { readClaudeNativeCredentialsAsync } from '../../utils/claudeNativeCredentials.js'
 import {
   getActiveOpenAIModelOptionsCache,
   getActiveProviderProfile,
@@ -776,6 +781,7 @@ type UnlockedModel = {
   displayName: string
   description?: string
   contextWindow?: number
+  provider: 'verboo' | 'codex' | 'claude'
 }
 
 async function loadUnlockedModels(force = false): Promise<UnlockedModel[]> {
@@ -792,24 +798,55 @@ async function loadUnlockedModels(force = false): Promise<UnlockedModel[]> {
     displayName: model.displayName ?? model.id,
     description: model.description,
     contextWindow: model.contextWindow,
+    provider: 'verboo',
   }))
 
   const cachedCodex = getCachedCodexModels()
   if (cachedCodex && !force) {
     const seen = new Set(models.map(model => model.id))
     for (const model of cachedCodex) {
-      if (!seen.has(model.id)) models.push(model)
+      if (!seen.has(model.id)) {
+        models.push({ ...model, provider: 'codex' })
+        seen.add(model.id)
+      }
     }
   } else if (await readCodexCredentialsAsync()) {
     try {
       const codex = await fetchCodexModels({ force })
       const seen = new Set(models.map(model => model.id))
       for (const model of codex) {
-        if (!seen.has(model.id)) models.push(model)
+        if (!seen.has(model.id)) {
+          models.push({ ...model, provider: 'codex' })
+          seen.add(model.id)
+        }
       }
     } catch {
       // Codex is an optional model expansion. It must never hide or block the
       // regular Verboo catalog when its credentials/API are unavailable.
+    }
+  }
+
+  const cachedClaude = getCachedClaudeNativeModels()
+  if (cachedClaude && !force) {
+    const seen = new Set(models.map(model => model.id))
+    for (const model of cachedClaude) {
+      if (!seen.has(model.id)) {
+        models.push({ ...model, provider: 'claude' })
+        seen.add(model.id)
+      }
+    }
+  } else if (await readClaudeNativeCredentialsAsync()) {
+    try {
+      const claude = await fetchClaudeNativeModels({ force })
+      const seen = new Set(models.map(model => model.id))
+      for (const model of claude) {
+        if (!seen.has(model.id)) {
+          models.push({ ...model, provider: 'claude' })
+          seen.add(model.id)
+        }
+      }
+    } catch {
+      // Claude is optional and always lower priority than Verboo and Codex.
     }
   }
   return models
@@ -819,11 +856,12 @@ function unlockedModelOptions(models: UnlockedModel[]): ModelOption[] {
   return models.map(model => ({
     value: model.id,
     label: model.displayName,
-    description:
+    description: `${
       model.description ??
       (model.contextWindow
         ? `${Math.round(model.contextWindow / 1000)}K context`
-        : model.id),
+        : model.id)
+    }${model.provider === 'claude' ? ' · via Claude nativo' : model.provider === 'codex' ? ' · via Codex' : ''}`,
   }))
 }
 
@@ -880,7 +918,7 @@ async function callVerbooModel(
   }
   if (COMMON_HELP_ARGS.includes(trimmedArgs)) {
     onDone(
-      'Use /model para listar os modelos liberados, /model refresh para atualizar o catálogo ou /model <id> para selecionar um ID exato. /codex adiciona os modelos Codex.',
+      'Use /model para listar os modelos liberados, /model refresh para atualizar o catálogo ou /model <id> para selecionar um ID exato. /codex adiciona modelos Codex e /claude adiciona modelos Claude nativos.',
       { display: 'system' },
     )
     return

@@ -25,8 +25,29 @@ const verbooModels = [
     raw: {},
   },
 ]
+const claudeModels = [
+  {
+    id: 'verboo-default',
+    displayName: 'Duplicate Verboo ID',
+    supportedReasoningLevels: [],
+    raw: {},
+  },
+  {
+    id: 'gpt-codex-primary',
+    displayName: 'Duplicate Codex ID',
+    supportedReasoningLevels: [],
+    raw: {},
+  },
+  {
+    id: 'claude-native-primary',
+    displayName: 'Claude Native Primary',
+    supportedReasoningLevels: [],
+    raw: {},
+  },
+]
 
 const fetchCodexModels = mock(async () => models)
+const fetchClaudeNativeModels = mock(async () => claudeModels)
 const assertCodexModelAvailable = mock(async (model: string) => {
   const match = models.find(candidate => candidate.id === model)
   if (!match) {
@@ -60,6 +81,25 @@ mock.module('../../services/api/verbooModels.js', () => ({
   getVerbooReasoningEffort: () => undefined,
 }))
 
+mock.module('../../services/api/claudeNativeModels.js', () => ({
+  assertClaudeNativeModelAvailable: mock(async (model: string) => {
+    const match = claudeModels.find(candidate => candidate.id === model)
+    if (!match) throw new Error(`Unknown Claude model: ${model}`)
+    return match
+  }),
+  clearClaudeNativeModelsCache: () => {},
+  fetchClaudeNativeModels,
+  getCachedClaudeNativeModels: () => claudeModels,
+  getClaudeNativeModel: (model: string) =>
+    claudeModels.find(candidate => candidate.id === model),
+  getClaudeNativeReasoningEffort: () => undefined,
+  parseClaudeNativeModelsResponse: () => ({
+    models: claudeModels,
+    hasMore: false,
+  }),
+  requireClaudeNativeModel: mock(async (model: string) => model),
+}))
+
 async function importFreshModelModule(
   suffix: string,
 ): Promise<typeof import('./model.js')> {
@@ -68,6 +108,7 @@ async function importFreshModelModule(
 
 beforeEach(() => {
   fetchCodexModels.mockClear()
+  fetchClaudeNativeModels.mockClear()
   assertCodexModelAvailable.mockClear()
 })
 
@@ -94,7 +135,7 @@ test('/model rejects values absent from every unlocked catalog', async () => {
   expect(messages[0]).toContain("'arbitrary-model' não está disponível")
 })
 
-test('/model keeps Verboo available and adds every unlocked Codex model', async () => {
+test('/model keeps Verboo first and adds deduplicated Codex then Claude models', async () => {
   const { call } = await importFreshModelModule('codex-all-api-models')
   const result = await call(() => {}, {} as never, '')
 
@@ -103,7 +144,48 @@ test('/model keeps Verboo available and adds every unlocked Codex model', async 
     (result as { props: { models: Array<{ id: string }> } }).props.models.map(
       model => model.id,
     ),
-  ).toEqual(['verboo-default', 'gpt-codex-primary', 'gpt-codex-hidden'])
+  ).toEqual([
+    'verboo-default',
+    'gpt-codex-primary',
+    'gpt-codex-hidden',
+    'claude-native-primary',
+  ])
+})
+
+test('/model accepts an exact model ID unlocked by Claude', async () => {
+  const messages: string[] = []
+  let selectedModel: string | null = null
+  const { call } = await importFreshModelModule('claude-exact-id')
+
+  await call(
+    message => {
+      if (message) messages.push(message)
+    },
+    {
+      getAppState: () => ({
+        mainLoopModel: 'verboo-default',
+        mainLoopModelForSession: null,
+      }),
+      setAppState: (
+        update: (state: {
+          mainLoopModel: string | null
+          mainLoopModelForSession: string | null
+        }) => {
+          mainLoopModel: string | null
+          mainLoopModelForSession: string | null
+        },
+      ) => {
+        selectedModel = update({
+          mainLoopModel: 'verboo-default',
+          mainLoopModelForSession: null,
+        }).mainLoopModel
+      },
+    } as never,
+    'claude-native-primary',
+  )
+
+  expect(selectedModel).toBe('claude-native-primary')
+  expect(messages[0]).toContain('claude-native-primary')
 })
 
 test('shouldAutoRefreshRouteCatalog preserves upstream discovery behavior', async () => {

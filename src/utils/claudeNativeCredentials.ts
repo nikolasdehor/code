@@ -1,0 +1,260 @@
+import { createCombinedAbortSignal } from './combinedAbortSignal.js'
+import { isBareMode } from './envUtils.js'
+import { getSecureStorage } from './secureStorage/index.js'
+import {
+  CLAUDE_NATIVE_CLIENT_ID,
+  CLAUDE_NATIVE_SCOPES,
+  CLAUDE_NATIVE_TOKEN_URL,
+  CLAUDE_RISK_NOTICE_VERSION,
+} from '../services/api/claudeNativeConfig.js'
+
+export const CLAUDE_NATIVE_STORAGE_KEY = 'claudeNative' as const
+const REFRESH_SKEW_MS = 60_000
+const REFRESH_FAILURE_COOLDOWN_MS = 60_000
+
+export type ClaudeRiskAcceptance = {
+  version: number
+  acceptedAt: string
+  accountId: string
+}
+
+export type ClaudeNativeCredentialBlob = {
+  accessToken: string
+  refreshToken?: string
+  expiresAt?: number
+  scopes: string[]
+  accountId: string
+  email?: string
+  organizationId?: string
+  riskAcceptance: ClaudeRiskAcceptance
+  lastRefreshAt?: number
+  lastRefreshFailureAt?: number
+}
+
+type RefreshResponse = {
+  access_token?: string
+  refresh_token?: string
+  expires_in?: number
+  scope?: string
+}
+
+let inFlightRefresh: Promise<{
+  refreshed: boolean
+  credentials?: ClaudeNativeCredentialBlob
+}> | null = null
+let inMemoryLastRefreshFailureAt: number | null = null
+
+function trimmed(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function normalizeRiskAcceptance(value: unknown): ClaudeRiskAcceptance | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const record = value as Record<string, unknown>
+  const version = finiteNumber(record.version)
+  const acceptedAt = trimmed(record.acceptedAt)
+  const accountId = trimmed(record.accountId)
+  if (version === undefined || !acceptedAt || !accountId) return undefined
+  return { version, acceptedAt, accountId }
+}
+
+function normalizeCredentials(value: unknown): ClaudeNativeCredentialBlob | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const record = value as Record<string, unknown>
+  const accessToken = trimmed(record.accessToken)
+  const accountId = trimmed(record.accountId)
+  const riskAcceptance = normalizeRiskAcceptance(record.riskAcceptance)
+  if (!accessToken || !accountId || !riskAcceptance) return undefined
+  if (riskAcceptance.accountId !== accountId) return undefined
+
+  return {
+    accessToken,
+    refreshToken: trimmed(record.refreshToken),
+    expiresAt: finiteNumber(record.expiresAt),
+    scopes: Array.isArray(record.scopes)
+      ? record.scopes.filter((scope): scope is string => typeof scope === 'string')
+      : [],
+    accountId,
+    email: trimmed(record.email),
+    organizationId: trimmed(record.organizationId),
+    riskAcceptance,
+    lastRefreshAt: finiteNumber(record.lastRefreshAt),
+    lastRefreshFailureAt: finiteNumber(record.lastRefreshFailureAt),
+  }
+}
+
+function storage() {
+  return getSecureStorage({ allowPlainTextFallback: false })
+}
+
+export function hasCurrentClaudeRiskAcceptance(
+  credentials: ClaudeNativeCredentialBlob | undefined,
+): boolean {
+  return Boolean(
+    credentials &&
+      credentials.riskAcceptance.version === CLAUDE_RISK_NOTICE_VERSION &&
+      credentials.riskAcceptance.accountId === credentials.accountId,
+  )
+}
+
+export function readClaudeNativeCredentials(): ClaudeNativeCredentialBlob | undefined {
+  if (isBareMode()) return undefined
+  try {
+    return normalizeCredentials(storage().read()?.claudeNative)
+  } catch {
+    return undefined
+  }
+}
+
+export async function readClaudeNativeCredentialsAsync(): Promise<
+  ClaudeNativeCredentialBlob | undefined
+> {
+  if (isBareMode()) return undefined
+  try {
+    return normalizeCredentials((await storage().readAsync())?.claudeNative)
+  } catch {
+    return undefined
+  }
+}
+
+export function saveClaudeNativeCredentials(
+  credentials: ClaudeNativeCredentialBlob,
+): { success: boolean; warning?: string } {
+  if (isBareMode()) {
+    return { success: false, warning: 'Bare mode: secure storage is disabled.' }
+  }
+  const normalized = normalizeCredentials(credentials)
+  if (!normalized || !hasCurrentClaudeRiskAcceptance(normalized)) {
+    return {
+      success: false,
+      warning: 'As credenciais Claude ou o aceite de risco estão incompletos.',
+    }
+  }
+  const secureStorage = storage()
+  const previous = secureStorage.read() || {}
+  const next = {
+    ...(previous as Record<string, unknown>),
+    [CLAUDE_NATIVE_STORAGE_KEY]: {
+      ...normalized,
+      lastRefreshAt: normalized.lastRefreshAt ?? Date.now(),
+    },
+  }
+  const result = secureStorage.update(next as typeof previous)
+  if (result.success) {
+    inMemoryLastRefreshFailureAt = normalized.lastRefreshFailureAt ?? null
+  }
+  return result
+}
+
+export function clearClaudeNativeCredentials(): {
+  success: boolean
+  warning?: string
+} {
+  if (isBareMode()) return { success: true }
+  const secureStorage = storage()
+  const previous = secureStorage.read() || {}
+  const next = { ...(previous as Record<string, unknown>) }
+  delete next[CLAUDE_NATIVE_STORAGE_KEY]
+  const result = secureStorage.update(next as typeof previous)
+  if (result.success) inMemoryLastRefreshFailureAt = null
+  return result
+}
+
+function shouldRefresh(credentials: ClaudeNativeCredentialBlob): boolean {
+  return (
+    credentials.expiresAt !== undefined &&
+    credentials.expiresAt <= Date.now() + REFRESH_SKEW_MS
+  )
+}
+
+function coolingDown(credentials: ClaudeNativeCredentialBlob): boolean {
+  const failedAt = Math.max(
+    credentials.lastRefreshFailureAt ?? 0,
+    inMemoryLastRefreshFailureAt ?? 0,
+  )
+  return Boolean(failedAt && Date.now() - failedAt < REFRESH_FAILURE_COOLDOWN_MS)
+}
+
+export async function refreshClaudeNativeAccessTokenIfNeeded(options?: {
+  force?: boolean
+}): Promise<{
+  refreshed: boolean
+  credentials?: ClaudeNativeCredentialBlob
+}> {
+  const current = await readClaudeNativeCredentialsAsync()
+  if (!current || !hasCurrentClaudeRiskAcceptance(current)) {
+    return { refreshed: false }
+  }
+  if (!current.refreshToken) return { refreshed: false, credentials: current }
+  if (!options?.force && !shouldRefresh(current)) {
+    return { refreshed: false, credentials: current }
+  }
+  if (!options?.force && coolingDown(current)) {
+    return { refreshed: false, credentials: current }
+  }
+  if (inFlightRefresh) return inFlightRefresh
+
+  inFlightRefresh = (async () => {
+    try {
+      const form = new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: current.refreshToken!,
+        client_id: CLAUDE_NATIVE_CLIENT_ID,
+        scope: CLAUDE_NATIVE_SCOPES.join(' '),
+      })
+      const { signal, cleanup } = createCombinedAbortSignal(undefined, {
+        timeoutMs: 15_000,
+      })
+      let response: Response
+      try {
+        response = await fetch(CLAUDE_NATIVE_TOKEN_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: form,
+          signal,
+        })
+      } finally {
+        cleanup()
+      }
+      if (!response.ok) {
+        const detail = (await response.text().catch(() => '')).trim().slice(0, 500)
+        throw new Error(
+          detail
+            ? `Falha ao renovar o login Claude (${response.status}): ${detail}`
+            : `Falha ao renovar o login Claude (${response.status}).`,
+        )
+      }
+      const payload = (await response.json()) as RefreshResponse
+      const accessToken = trimmed(payload.access_token)
+      if (!accessToken) {
+        throw new Error('A renovação Claude não retornou um access token.')
+      }
+      const expiresIn = finiteNumber(payload.expires_in)
+      const next: ClaudeNativeCredentialBlob = {
+        ...current,
+        accessToken,
+        refreshToken: trimmed(payload.refresh_token) ?? current.refreshToken,
+        expiresAt: expiresIn ? Date.now() + expiresIn * 1000 : current.expiresAt,
+        scopes: trimmed(payload.scope)?.split(/\s+/).filter(Boolean) ?? current.scopes,
+        lastRefreshAt: Date.now(),
+        lastRefreshFailureAt: undefined,
+      }
+      const saved = saveClaudeNativeCredentials(next)
+      if (!saved.success) throw new Error(saved.warning)
+      inMemoryLastRefreshFailureAt = null
+      return { refreshed: true, credentials: next }
+    } catch (error) {
+      const failedAt = Date.now()
+      inMemoryLastRefreshFailureAt = failedAt
+      saveClaudeNativeCredentials({ ...current, lastRefreshFailureAt: failedAt })
+      throw error
+    } finally {
+      inFlightRefresh = null
+    }
+  })()
+  return inFlightRefresh
+}
