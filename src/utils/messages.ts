@@ -155,6 +155,11 @@ import { formatFileSize } from './format.js'
 import { validateImagesForAPI } from './imageValidation.js'
 import { safeParseJSON } from './json.js'
 import { logError, logMCPDebug } from './log.js'
+import {
+  formatToolResultPairingIssue,
+  validateToolResultPairing,
+  type ToolResultPairingValidationContext,
+} from './messages/toolPairing.js'
 import { normalizeLegacyToolName } from './permissions/permissionRuleParser.js'
 import {
   getPlanModeV2AgentCount,
@@ -5154,6 +5159,21 @@ export function createToolUseSummaryMessage(
   }
 }
 
+export {
+  formatToolResultPairingIssue,
+  selectToolPairSafeMessageRange,
+  validateToolResultPairing,
+} from './messages/toolPairing.js'
+export type {
+  ToolPairSafeMessageRangeDiagnostics,
+  ToolPairSafeMessageRangeOptions,
+  ToolPairSafeMessageRangeResult,
+  ToolResultPairingIssue,
+  ToolResultPairingIssueKind,
+  ToolResultPairingValidationContext,
+  ToolResultPairingValidationResult,
+} from './messages/toolPairing.js'
+
 /**
  * Defensive validation: ensure tool_use/tool_result pairing is correct.
  *
@@ -5171,6 +5191,7 @@ export function createToolUseSummaryMessage(
  */
 export function ensureToolResultPairing(
   messages: (UserMessage | AssistantMessage)[],
+  context: ToolResultPairingValidationContext = {},
 ): (UserMessage | AssistantMessage)[] {
   const result: (UserMessage | AssistantMessage)[] = []
   let repaired = false
@@ -5439,6 +5460,7 @@ export function ensureToolResultPairing(
   }
 
   if (repaired) {
+    const validation = validateToolResultPairing(messages, context)
     // Capture diagnostic info to help identify root cause
     const messageTypes = messages.map((m, idx) => {
       if (m.type === 'assistant') {
@@ -5477,20 +5499,46 @@ export function ensureToolResultPairing(
       throw new Error(
         `ensureToolResultPairing: tool_use/tool_result pairing mismatch detected (strict mode). ` +
           `Refusing to repair — would inject synthetic placeholders into model context. ` +
+          `Phase: ${validation.context.phase ?? 'unknown'}. ` +
+          `Issues: ${validation.issues.map(formatToolResultPairingIssue).join('; ') || 'none'}. ` +
           `Message structure: ${messageTypes.join('; ')}. See inc-4977.`,
       )
     }
 
+    const issueKinds = [
+      ...new Set(validation.issues.map(issue => issue.kind)),
+    ].join(',')
+    const issueSummary =
+      validation.issues.map(formatToolResultPairingIssue).join('; ') || 'none'
+    const diagnosticContext =
+      `Phase: ${validation.context.phase ?? 'unknown'}. ` +
+      `Query source: ${validation.context.querySource ?? 'unknown'}. ` +
+      `Provider: ${validation.context.provider ?? 'unknown'}. ` +
+      `Model: ${validation.context.model ?? 'unknown'}. ` +
+      `Issues: ${issueSummary}.`
     logEvent('tengu_tool_result_pairing_repaired', {
       messageCount: messages.length,
       repairedMessageCount: result.length,
+      issueCount: validation.issues.length,
+      phase: (validation.context.phase ??
+        'unknown') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      querySource: (validation.context.querySource ??
+        'unknown') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      agentId: (validation.context.agentId ??
+        'none') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      model: (validation.context.model ??
+        'unknown') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      provider: (validation.context.provider ??
+        'unknown') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      issueKinds: (issueKinds ||
+        'none') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       messageTypes: messageTypes.join(
         '; ',
       ) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     })
     logError(
       new Error(
-        `ensureToolResultPairing: repaired missing tool_result blocks (${messages.length} -> ${result.length} messages). Message structure: ${messageTypes.join('; ')}`,
+        `ensureToolResultPairing: repaired missing tool_result blocks (${messages.length} -> ${result.length} messages). ${diagnosticContext} Message structure: ${messageTypes.join('; ')}`,
       ),
     )
   }

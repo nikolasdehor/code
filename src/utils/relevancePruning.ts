@@ -6,6 +6,7 @@
 
 import { roughTokenCountEstimation } from '../services/tokenEstimation.js'
 import type { Message } from '../types/message.js'
+import { selectToolPairSafeMessageRange } from './messages/toolPairing.js'
 
 export interface PruningOptions {
   targetTokens: number
@@ -154,8 +155,18 @@ export function pruneByRelevance(
     return messages
   }
 
-  const recentMessages = messages.slice(-preserveRecent)
-  const olderMessages = messages.slice(0, -preserveRecent)
+  const requestedRecentStart = Math.max(0, messages.length - preserveRecent)
+  const recentRange = selectToolPairSafeMessageRange(
+    messages,
+    requestedRecentStart,
+    messages.length,
+    {
+      projectionName: 'relevance_pruning_recent',
+      querySource: 'compact',
+    },
+  )
+  const recentMessages = recentRange.messages
+  const olderMessages = messages.slice(0, recentRange.start)
 
   const olderGroups = groupMessagesByApiRound(olderMessages)
 

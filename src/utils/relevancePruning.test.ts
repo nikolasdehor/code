@@ -6,6 +6,11 @@ import {
   hasToolCalls,
   hasErrors,
 } from './relevancePruning.js'
+import {
+  createAssistantMessage,
+  createUserMessage,
+  validateToolResultPairing,
+} from './messages.js'
 
 function createMessage(role: string, content: string, createdAt: number = Date.now()): any {
   return {
@@ -78,6 +83,46 @@ describe('relevancePruning', () => {
       if (round1Msgs.length > 0) {
         expect(toolResultForTu1.length).toBe(1)
       }
+    })
+
+    it('expands the recent boundary instead of orphaning a tool_result', () => {
+      const assistant = createAssistantMessage({
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_recent_boundary',
+            name: 'Read',
+            input: { file_path: '/tmp/example.txt' },
+          },
+        ],
+      })
+      assistant.message.created_at = 1000
+      const toolResult = createUserMessage({
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_recent_boundary',
+            content: 'file contents',
+          },
+        ],
+      })
+      toolResult.message.created_at = 1001
+      const recentOne = createUserMessage({ content: 'recent one' })
+      recentOne.message.created_at = 2000
+      const recentTwo = createUserMessage({ content: 'recent two' })
+      recentTwo.message.created_at = 3000
+
+      const result = pruneByRelevance(
+        [assistant, toolResult, recentOne, recentTwo],
+        { targetTokens: 0, preserveRecent: 3 },
+      )
+      const pairable = result.filter(
+        message => message.type === 'user' || message.type === 'assistant',
+      )
+
+      expect(result).toContain(assistant)
+      expect(result).toContain(toolResult)
+      expect(validateToolResultPairing(pairable).valid).toBe(true)
     })
   })
 

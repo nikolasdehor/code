@@ -651,6 +651,46 @@ describe('Codex request translation', () => {
     ])
   })
 
+  test('preserves call IDs for parallel Codex tool uses and results', () => {
+    const items = convertAnthropicMessagesToResponsesInput([
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'call_a', name: 'read', input: { path: 'a' } },
+          { type: 'tool_use', id: 'call_b', name: 'read', input: { path: 'b' } },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'call_a', content: 'A' },
+          { type: 'tool_result', tool_use_id: 'call_b', content: 'B' },
+        ],
+      },
+    ])
+
+    expect(items.filter(item => item.type === 'function_call')).toEqual([
+      {
+        type: 'function_call',
+        id: 'fc_a',
+        call_id: 'call_a',
+        name: 'read',
+        arguments: '{"path":"a"}',
+      },
+      {
+        type: 'function_call',
+        id: 'fc_b',
+        call_id: 'call_b',
+        name: 'read',
+        arguments: '{"path":"b"}',
+      },
+    ])
+    expect(items.filter(item => item.type === 'function_call_output')).toEqual([
+      { type: 'function_call_output', call_id: 'call_a', output: 'A' },
+      { type: 'function_call_output', call_id: 'call_b', output: 'B' },
+    ])
+  })
+
   test('converts completed Codex tool response into Anthropic message', () => {
     const message = convertCodexResponseToAnthropicMessage(
       {
@@ -929,6 +969,64 @@ describe('Codex request translation', () => {
       'content_block_stop',
       'message_delta',
       'message_stop',
+    ])
+  })
+
+  test('translates interleaved parallel Codex calls without losing either ID', async () => {
+    const responseText = [
+      'event: response.output_item.added',
+      'data: {"type":"response.output_item.added","item":{"id":"fc_a","call_id":"call_a","type":"function_call","name":"read","arguments":""},"output_index":0}',
+      '',
+      'event: response.output_item.added',
+      'data: {"type":"response.output_item.added","item":{"id":"fc_b","call_id":"call_b","type":"function_call","name":"read","arguments":""},"output_index":1}',
+      '',
+      'event: response.function_call_arguments.delta',
+      'data: {"type":"response.function_call_arguments.delta","item_id":"fc_a","delta":"{\\"path\\":\\"a\\"}"}',
+      '',
+      'event: response.function_call_arguments.delta',
+      'data: {"type":"response.function_call_arguments.delta","item_id":"fc_b","delta":"{\\"path\\":\\"b\\"}"}',
+      '',
+      'event: response.output_item.done',
+      'data: {"type":"response.output_item.done","item":{"id":"fc_b","call_id":"call_b","type":"function_call","name":"read","arguments":"{\\"path\\":\\"b\\"}"},"output_index":1}',
+      '',
+      'event: response.output_item.done',
+      'data: {"type":"response.output_item.done","item":{"id":"fc_a","call_id":"call_a","type":"function_call","name":"read","arguments":"{\\"path\\":\\"a\\"}"},"output_index":0}',
+      '',
+      'event: response.completed',
+      'data: {"type":"response.completed","response":{"id":"resp_parallel","status":"completed","model":"gpt-5.4","output":[{"id":"fc_a","call_id":"call_a","type":"function_call","name":"read","arguments":"{\\"path\\":\\"a\\"}"},{"id":"fc_b","call_id":"call_b","type":"function_call","name":"read","arguments":"{\\"path\\":\\"b\\"}"}],"usage":{"input_tokens":2,"output_tokens":2}}}',
+      '',
+    ].join('\n')
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(responseText))
+        controller.close()
+      },
+    })
+    const toolUses: Array<{ id: string; name: string }> = []
+
+    for await (const event of codexStreamToAnthropic(
+      new Response(stream),
+      'gpt-5.4',
+    )) {
+      const contentBlock = event.content_block as
+        | { type?: string; id?: string; name?: string }
+        | undefined
+      if (
+        event.type === 'content_block_start' &&
+        contentBlock?.type === 'tool_use' &&
+        typeof contentBlock.id === 'string' &&
+        typeof contentBlock.name === 'string'
+      ) {
+        toolUses.push({
+          id: contentBlock.id,
+          name: contentBlock.name,
+        })
+      }
+    }
+
+    expect(toolUses).toEqual([
+      { id: 'call_a', name: 'read' },
+      { id: 'call_b', name: 'read' },
     ])
   })
 

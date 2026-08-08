@@ -258,6 +258,63 @@ export type MessageUpdateLazy<M extends Message = Message> = {
   }
 }
 
+function messageContainsToolResult(message: Message, toolUseId: string): boolean {
+  return (
+    message.type === 'user' &&
+    Array.isArray(message.message.content) &&
+    message.message.content.some(
+      block =>
+        block.type === 'tool_result' && block.tool_use_id === toolUseId,
+    )
+  )
+}
+
+function createMissingToolResultMessage(
+  toolUseId: string,
+  assistantMessage: AssistantMessage,
+): MessageUpdateLazy {
+  const errorMessage =
+    'Tool execution ended without returning a result. The tool was not run again.'
+  return {
+    message: createUserMessage({
+      content: [
+        {
+          type: 'tool_result',
+          content: `<tool_use_error>${errorMessage}</tool_use_error>`,
+          is_error: true,
+          tool_use_id: toolUseId,
+        },
+      ],
+      toolUseResult: errorMessage,
+      sourceToolAssistantUUID: assistantMessage.uuid,
+    }),
+  }
+}
+
+/**
+ * Guarantees that a completed tool stream has a terminal result for its call.
+ * The fallback represents the missing result; it never retries the tool.
+ */
+export async function* ensureTerminalToolResult(
+  updates: AsyncIterable<MessageUpdateLazy>,
+  toolUseId: string,
+  assistantMessage: AssistantMessage,
+  onMissing: () => void = () => {},
+): AsyncGenerator<MessageUpdateLazy, void> {
+  let hasTerminalToolResult = false
+  for await (const update of updates) {
+    if (messageContainsToolResult(update.message, toolUseId)) {
+      hasTerminalToolResult = true
+    }
+    yield update
+  }
+
+  if (!hasTerminalToolResult) {
+    onMissing()
+    yield createMissingToolResultMessage(toolUseId, assistantMessage)
+  }
+}
+
 export type McpServerType =
   | 'stdio'
   | 'sse'
@@ -400,6 +457,7 @@ export async function* runToolUse(
   }
 
   const toolInput = toolUse.input as { [key: string]: string }
+  let hasTerminalToolResult = false
   try {
     if (toolUseContext.abortController.signal.aborted) {
       logEvent('tengu_tool_use_cancelled', {
@@ -450,7 +508,7 @@ export async function* runToolUse(
       }),
       { level: 'debug' },
     )
-    for await (const update of streamedCheckPermissionsAndCallTool(
+    const toolUpdates = streamedCheckPermissionsAndCallTool(
       tool,
       toolUse.id,
       toolInput,
@@ -461,7 +519,33 @@ export async function* runToolUse(
       requestId,
       mcpServerType,
       mcpServerBaseUrl,
+    )
+    for await (const update of ensureTerminalToolResult(
+      toolUpdates,
+      toolUse.id,
+      assistantMessage,
+      () => {
+        const sanitizedToolName = sanitizeToolNameForAnalytics(tool.name)
+        logEvent('tengu_tool_result_missing_at_execution', {
+          toolName: sanitizedToolName,
+          toolUseID:
+            toolUse.id as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          model:
+            toolUseContext.options.mainLoopModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          querySource: (toolUseContext.options.querySource ??
+            'unknown') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          isMcp: tool.isMcp ?? false,
+        })
+        logError(
+          new Error(
+            `runToolUse: ${sanitizedToolName} completed without a tool_result`,
+          ),
+        )
+      },
     )) {
+      if (messageContainsToolResult(update.message, toolUse.id)) {
+        hasTerminalToolResult = true
+      }
       yield update
     }
     logForDebugging(
@@ -478,19 +562,21 @@ export async function* runToolUse(
     const toolInfo = tool ? ` (${tool.name})` : ''
     const detailedError = `Error calling tool${toolInfo}: ${errorMessage}`
 
-    yield {
-      message: createUserMessage({
-        content: [
-          {
-            type: 'tool_result',
-            content: `<tool_use_error>${detailedError}</tool_use_error>`,
-            is_error: true,
-            tool_use_id: toolUse.id,
-          },
-        ],
-        toolUseResult: detailedError,
-        sourceToolAssistantUUID: assistantMessage.uuid,
-      }),
+    if (!hasTerminalToolResult) {
+      yield {
+        message: createUserMessage({
+          content: [
+            {
+              type: 'tool_result',
+              content: `<tool_use_error>${detailedError}</tool_use_error>`,
+              is_error: true,
+              tool_use_id: toolUse.id,
+            },
+          ],
+          toolUseResult: detailedError,
+          sourceToolAssistantUUID: assistantMessage.uuid,
+        }),
+      }
     }
   }
 }
