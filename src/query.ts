@@ -80,12 +80,8 @@ import {
 } from './utils/messageQueueManager.js'
 import { notifyCommandLifecycle } from './utils/commandLifecycle.js'
 import { headlessProfilerCheckpoint } from './utils/headlessProfiler.js'
-import {
-  getDefaultMainLoopModelSetting,
-  getRuntimeMainLoopModel,
-  parseUserSpecifiedModel,
-  renderModelName,
-} from './utils/model/model.js'
+import { renderModelName } from './utils/model/model.js'
+import { resolveQueryTurnModel } from './query/model.js'
 import {
   doesMostRecentAssistantMessageExceed200k,
   finalContextTokensFromLastResponse,
@@ -638,13 +634,12 @@ async function* queryLoop(
 
     const appState = toolUseContext.getAppState()
     const permissionMode = appState.toolPermissionContext.mode
-    const appStateMainLoopModel =
-      appState.mainLoopModelForSession ??
-      appState.mainLoopModel ??
-      getDefaultMainLoopModelSetting()
-    let currentModel = getRuntimeMainLoopModel({
+    const sessionModel =
+      appState.mainLoopModelForSession ?? appState.mainLoopModel
+    let currentModel = resolveQueryTurnModel({
       permissionMode,
-      mainLoopModel: parseUserSpecifiedModel(appStateMainLoopModel),
+      turnModel: toolUseContext.options.mainLoopModel,
+      sessionModel,
       exceeds200kTokens:
         permissionMode === 'plan' &&
         doesMostRecentAssistantMessageExceed200k(messagesForQuery),
