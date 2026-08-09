@@ -855,7 +855,15 @@ async function* queryLoop(
               ...(config.gates.fastModeEnabled && {
                 fastMode: appState.fastMode,
               }),
-              toolChoice: undefined,
+              // Qwen 3.6 can emit a normal stop immediately after announcing
+              // that it is about to use a tool. The continuation guard retries
+              // that turn; require a tool only on the recovery request so the
+              // model cannot acknowledge the nudge and stop in the same place
+              // again. Normal turns remain automatic.
+              toolChoice:
+                state.transition?.reason === 'continuation_nudge'
+                  ? { type: 'any' }
+                  : undefined,
               isNonInteractiveSession:
                 toolUseContext.options.isNonInteractiveSession,
               fallbackModel,

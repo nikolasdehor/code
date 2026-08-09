@@ -134,6 +134,20 @@ describe('Agent loop continuation nudge', () => {
       'Continue with the task. Use the appropriate tools to proceed.',
     )
   })
+
+  test('nudge recovery requires a tool while normal turns stay automatic', async () => {
+    const query = await file('query.ts').text()
+    const claude = await file('services/api/claude.ts').text()
+    const openAIShim = await file('services/api/openaiShim.ts').text()
+
+    expect(query).toMatch(
+      /state\.transition\?\.reason\s*===\s*'continuation_nudge'[\s\S]*?\?\s*\{\s*type:\s*'any'\s*\}[\s\S]*?:\s*undefined/,
+    )
+    expect(claude).toContain('BetaToolChoiceAny')
+    expect(openAIShim).toMatch(
+      /tc\.type\s*===\s*'any'[\s\S]*?body\.tool_choice\s*=\s*'required'/,
+    )
+  })
 })
 
 // ---------------------------------------------------------------------------
