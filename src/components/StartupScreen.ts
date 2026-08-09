@@ -196,9 +196,9 @@ export function renderStartupScreen(
   )
   const cwd = truncateStartupText(displayCwd, Math.max(1, columns - 5))
 
-  out.push(`  ${PURPLE}╭${RESET}  👻  ${bold}${PURPLE}Verboo Code${RESET} ${DIMP}v${shownVersion}${RESET}`)
-  out.push(`  ${PURPLE}│${RESET}  ${STATUS_C}●${RESET} ${DIMP}${model} · ${statusLabel}${RESET}`)
-  out.push(`  ${PURPLE}╰${RESET}  ${DIMP}${cwd}${RESET}`)
+  out.push(`     👻  ${bold}${PURPLE}Verboo Code${RESET} ${DIMP}v${shownVersion}${RESET}`)
+  out.push(`     ${STATUS_C}●${RESET} ${DIMP}${model} · ${statusLabel}${RESET}`)
+  out.push(`     ${DIMP}${cwd}${RESET}`)
 
   out.push('')
 

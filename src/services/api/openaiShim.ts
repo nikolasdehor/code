@@ -2299,15 +2299,13 @@ class OpenAIShimMessages {
       body.response_format = responseFormat
     }
 
-    // Emit reasoning_effort for chat_completions when the resolved provider
-    // request carries a reasoning effort (set via /effort, model alias default,
-    // or `?reasoning=<level>` query on the model string). OpenAI, Codex, and
-    // most OpenAI-compatible endpoints read it from this top-level field.
+    // Emit the OpenAI-compatible reasoning_effort field when the resolved
+    // provider request carries a reasoning effort (set via /effort, model alias
+    // default, or `?reasoning=<level>` query on the model string). Do not also
+    // emit a top-level `effort` alias: strict OpenAI-compatible servers such as
+    // the SGLang endpoint behind Verboo's Qwen route reject that unknown field.
     if (request.reasoning) {
       body.reasoning_effort = request.reasoning.effort
-      // vLLM-compatible alias: some vLLM/SGLang deployments expose effort
-      // under this top-level key instead of reasoning_effort.
-      body.effort = request.reasoning.effort
     }
     // Convert max_tokens to max_completion_tokens for OpenAI API compatibility.
     // Azure OpenAI requires max_completion_tokens and does not accept max_tokens.

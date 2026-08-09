@@ -141,7 +141,7 @@ export function CondensedLogo() {
   }
   let t12;
   if ($[23] !== t10 || $[24] !== t11 || $[25] !== t6 || $[26] !== t7 || $[27] !== t9) {
-    t12 = <OffscreenFreeze><Box borderStyle="round" borderColor="inactive" paddingX={2} paddingY={0} flexDirection="row" gap={2} alignItems="center"><Box flexDirection="column" alignItems="center"><Text color="inactive">•</Text>{t4}<Text color="inactive">•</Text></Box><Box flexDirection="column"><Text bold={true}>Verboo Code</Text><Text dimColor={true}>{t6a}</Text><Box marginTop={1}>{t6}</Box>{t7}{t9}{t10}{t11}</Box></Box></OffscreenFreeze>;
+    t12 = <OffscreenFreeze><Box paddingX={2} paddingY={0} flexDirection="row" gap={2} alignItems="center"><Box flexDirection="column" alignItems="center"><Text color="inactive">•</Text>{t4}<Text color="inactive">•</Text></Box><Box flexDirection="column"><Text bold={true}>Verboo Code</Text><Text dimColor={true}>{t6a}</Text><Box marginTop={1}>{t6}</Box>{t7}{t9}{t10}{t11}</Box></Box></OffscreenFreeze>;
     $[23] = t10;
     $[24] = t11;
     $[25] = t6;

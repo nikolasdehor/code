@@ -6017,8 +6017,7 @@ test('strips Anthropic attribution header block from responses-API instructions 
   expect(instructions).toContain('You are Claude Code.')
 })
 
-test('emits reasoning_effort and effort on chat_completions when reasoningEffort is passed', async () => {
-  process.env.OPENAI_BASE_URL = 'https://api.openai.com/v1'
+test('emits only reasoning_effort for a Verboo Qwen chat completion', async () => {
   process.env.OPENAI_API_KEY = 'test-key'
 
   let requestBody: Record<string, unknown> | undefined
@@ -6028,7 +6027,7 @@ test('emits reasoning_effort and effort on chat_completions when reasoningEffort
     return new Response(
       JSON.stringify({
         id: 'chatcmpl-1',
-        model: 'gpt-5.4',
+        model: 'ultra/qwen3.6-27b',
         choices: [
           {
             message: { role: 'assistant', content: 'ok' },
@@ -6043,17 +6042,22 @@ test('emits reasoning_effort and effort on chat_completions when reasoningEffort
 
   const client = createOpenAIShimClient({
     reasoningEffort: 'xhigh',
+    providerOverride: {
+      model: 'ultra/qwen3.6-27b',
+      baseURL: VERBOO_ROUTER_URL,
+      apiKey: 'test-key',
+    },
   }) as OpenAIShimClient
 
   await client.beta.messages.create({
-    model: 'gpt-5.4',
+    model: 'ultra/qwen3.6-27b',
     messages: [{ role: 'user', content: 'hi' }],
     max_tokens: 16,
     stream: false,
   })
 
   expect(requestBody?.reasoning_effort).toBe('xhigh')
-  expect(requestBody?.effort).toBe('xhigh')
+  expect(requestBody && 'effort' in requestBody).toBe(false)
 })
 
 test('omits reasoning_effort on chat_completions when no override and model has no alias default', async () => {

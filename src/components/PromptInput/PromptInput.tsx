@@ -2304,7 +2304,7 @@ function PromptInput({
           </Box>
           <Text color={swarmBanner.bgColor}>{'─'.repeat(columns)}</Text>
         </> : <Box width="100%">
-          <Box borderStyle="round" borderColor={getBorderColor()} borderText={buildPromptBorderText(mode)} paddingLeft={1} width="100%">
+          <Box borderStyle="round" borderColor={getBorderColor()} borderText={mode === 'bash' ? buildPromptBorderText(mode) : undefined} paddingLeft={1} width="100%">
             <Box flexDirection="row" alignItems="flex-start" justifyContent="flex-start">
               <PromptInputModeIndicator mode={mode} isLoading={isLoading} viewingAgentName={viewingAgentName} viewingAgentColor={viewingAgentColor} />
               {showFastIcon && <Text color={getBorderColor()}>{' '}{getFastIconString(true, fastModeCooldown)}{' '}{showFastIconHint && <Text dimColor>/fast</Text>}</Text>}

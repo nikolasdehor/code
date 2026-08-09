@@ -237,6 +237,7 @@ describe('renderStartupScreen', () => {
     expect(plainOutput).toContain('👻')
     expect(plainOutput).toContain('Verboo Code')
     expect(plainOutput).toContain('Verboo · early-adopters/qwen3.6-27b')
+    expect(plainOutput).not.toMatch(/[╭│╰]/)
     expect(plainOutput).not.toContain('▄▀▀▀▀▀▀▀▄')
     expect(plainOutput).not.toContain('Tokens ilimitados')
     expect(output).toContain('\x1b[0m')
