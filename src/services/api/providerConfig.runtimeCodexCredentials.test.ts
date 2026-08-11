@@ -88,9 +88,7 @@ test('runtime credential resolution avoids sync secure-storage reads when async 
   }))
 
   // @ts-expect-error cache-busting query string for Bun module mocks
-  const { resolveRuntimeCodexCredentials } = await import(
-    './providerConfig.js?runtime-no-sync-secure-storage'
-  )
+  const { resolveRuntimeCodexCredentials } = await import('./providerConfig.js?runtime-no-sync-secure-storage')
 
   const credentials = resolveRuntimeCodexCredentials({
     env: {} as NodeJS.ProcessEnv,
@@ -104,4 +102,30 @@ test('runtime credential resolution avoids sync secure-storage reads when async 
   expect(credentials.source).toBe('secure-storage')
   expect(credentials.apiKey).toBe('stored-access-token')
   expect(credentials.accountId).toBe('acct_stored')
+})
+
+test('runtime credential resolution can read an explicitly selected local account', async () => {
+  const readAccountIds: Array<string | undefined> = []
+  mock.module('../../utils/codexCredentials.js', () => ({
+    isCodexRefreshFailureCoolingDown: () => false,
+    readCodexCredentials: (localAccountId?: string) => {
+      readAccountIds.push(localAccountId)
+      return {
+        accessToken: 'selected-token',
+        accountId: 'provider-selected',
+      }
+    },
+  }))
+
+  // @ts-expect-error cache-busting query string for Bun module mocks
+  const { resolveRuntimeCodexCredentials } = await import('./providerConfig.js?selected-local-account')
+  const credentials = resolveRuntimeCodexCredentials({
+    env: {} as NodeJS.ProcessEnv,
+    localAccountId: 'local-selected',
+  })
+
+  expect(readAccountIds).toEqual(['local-selected'])
+  expect(credentials.source).toBe('secure-storage')
+  expect(credentials.apiKey).toBe('selected-token')
+  expect(credentials.accountId).toBe('provider-selected')
 })

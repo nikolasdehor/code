@@ -64,6 +64,7 @@ import { fetchVerbooModels } from './services/api/verbooModels.js';
 import { assertCLIEntitlement } from './services/oauth/cliEntitlement.js';
 import { readCodexCredentialsAsync } from './utils/codexCredentials.js';
 import { readClaudeNativeCredentialsAsync } from './utils/claudeNativeCredentials.js';
+import { getSelectedProviderAccount, initializeProviderAccountSelection } from './utils/providerAccounts/selection.js';
 import { getBaseRenderOptions } from './utils/renderOptions.js';
 import { getSessionIngressAuthToken } from './utils/sessionIngressAuth.js';
 import { settingsChangeDetector } from './utils/settings/changeDetector.js';
@@ -1003,7 +1004,7 @@ async function run(): Promise<CommanderCommand> {
     return Number.isFinite(n) ? n : undefined;
   }).hideHelp()).option('--from-pr [value]', 'Resume a session linked to a PR by PR number/URL, or open interactive picker with optional search term', value => value || true).option('--no-session-persistence', 'Disable session persistence - sessions will not be saved to disk and cannot be resumed (only works with --print)').addOption(new Option('--resume-session-at <message id>', 'When resuming, only messages up to and including the assistant message with <message.id> (use with --resume in print mode)').argParser(String).hideHelp()).addOption(new Option('--rewind-files <user-message-id>', 'Restore files to state at the specified user message and exit (requires --resume)').hideHelp())
   // @[MODEL LAUNCH]: Update the example model ID in the --model help text.
-  .option('--model <model>', `Model ID returned by /model or --list-models.`).addOption(new Option('--effort <level>', `Effort level for the current session (low, medium, high, max)`).argParser((rawValue: string) => {
+  .option('--model <model>', `Model ID returned by /model or --list-models.`).option('--provider-account <opaque-id>', 'Use one connected provider account for this process').addOption(new Option('--effort <level>', `Effort level for the current session (low, medium, high, max)`).argParser((rawValue: string) => {
     const value = rawValue.toLowerCase();
     const allowed = ['low', 'medium', 'high', 'max'];
     if (!allowed.includes(value)) {
@@ -1019,6 +1020,11 @@ async function run(): Promise<CommanderCommand> {
   .option('--plugin-dir <path>', 'Load plugins from a directory for this session only (repeatable: --plugin-dir A --plugin-dir B)', (val: string, prev: string[]) => [...prev, val], [] as string[]).option('--disable-slash-commands', 'Disable all skills', () => true).option('--chrome', 'Enable Verboo in Chrome integration').option('--no-chrome', 'Disable Verboo in Chrome integration').option('--file <specs...>', 'File resources to download at startup. Format: file_id:relative_path (e.g., --file file_abc:doc.txt file_def:img.png)').option('--list-models', 'List available Verboo models and exit').action(async (prompt, options) => {
     profileCheckpoint('action_handler_start');
 
+    const providerAccountId = (options as { providerAccount?: string }).providerAccount;
+    if (providerAccountId) {
+      initializeProviderAccountSelection(providerAccountId);
+    }
+
     // Verboo is always first. Optional provider catalogs only add non-duplicate IDs.
     if ((options as { listModels?: boolean }).listModels) {
       try {
@@ -1026,12 +1032,23 @@ async function run(): Promise<CommanderCommand> {
         const tokens = await getClaudeAIOAuthTokensAsync();
         if (!tokens?.accessToken) throw new Error('Sessão Verboo ausente.');
         const verbooModels = await fetchVerbooModels(tokens.accessToken);
-        const codexModels = await readCodexCredentialsAsync()
-          ? await fetchCodexModels().catch(() => [])
-          : [];
-        const claudeModels = await readClaudeNativeCredentialsAsync()
-          ? await fetchClaudeNativeModels().catch(() => [])
-          : [];
+        const selectedAccount = getSelectedProviderAccount();
+        const codexAccountId = selectedAccount?.provider === 'codex'
+          ? selectedAccount.accountId
+          : undefined;
+        const claudeAccountId = selectedAccount?.provider === 'claude'
+          ? selectedAccount.accountId
+          : undefined;
+        const codexModels = selectedAccount?.provider === 'claude'
+          ? []
+          : await readCodexCredentialsAsync(codexAccountId)
+            ? await fetchCodexModels({ localAccountId: codexAccountId }).catch(() => [])
+            : [];
+        const claudeModels = selectedAccount?.provider === 'codex'
+          ? []
+          : await readClaudeNativeCredentialsAsync(claudeAccountId)
+            ? await fetchClaudeNativeModels({ localAccountId: claudeAccountId }).catch(() => [])
+            : [];
         const seen = new Set(verbooModels.map(model => model.id));
         const uniqueCodex = codexModels.filter(model => {
           if (seen.has(model.id)) return false;
@@ -4206,6 +4223,69 @@ async function run(): Promise<CommanderCommand> {
       const interactive = opts.print === true;
       await runConnectHeadless(connectConfig, prompt, opts.outputFormat, interactive);
     });
+  }
+
+  // Versioned provider account/usage protocol consumed by Verboo Desktop.
+  // Keep handlers lazy so normal interactive startup does not load quota APIs.
+  const providerAccounts = program
+    .command('provider-accounts')
+    .description('Manage connected Claude and Codex accounts')
+  const runProviderAccounts = async (argv: string[]) => {
+    const { runProviderAccountsCommand } = await import(
+      './cli/handlers/providerAccounts.js'
+    )
+    const output = await runProviderAccountsCommand(argv)
+    process.stdout.write(`${JSON.stringify(output)}\n`)
+    // process.exit (not return) — startup telemetry/analytics sockets can
+    // leave event loop handles alive after the envelope is flushed. Headless
+    // protocol commands must terminate deterministically for release smokes.
+    // eslint-disable-next-line custom-rules/no-process-exit
+    process.exit(0)
+  }
+  providerAccounts.action(async () => runProviderAccounts(['capabilities']))
+  providerAccounts
+    .command('capabilities')
+    .description('Show supported provider account protocols')
+    .action(async () => runProviderAccounts(['capabilities']))
+  providerAccounts
+    .command('list')
+    .description('List connected provider accounts')
+    .action(async () => runProviderAccounts(['list']))
+  providerAccounts
+    .command('usage')
+    .description('Show usage windows for one provider account')
+    .requiredOption('--provider <provider>', 'Provider: codex or claude')
+    .option('--account <opaque-id>', 'Opaque local account ID')
+    .action(async (options: { provider?: string; account?: string }) => {
+      const argv = ['usage', '--provider', options.provider ?? '']
+      if (options.account) argv.push('--account', options.account)
+      return runProviderAccounts(argv)
+    })
+  providerAccounts
+    .command('models')
+    .description('List models available to one connected provider account')
+    .requiredOption('--provider <provider>', 'Provider: codex or claude')
+    .option('--account <opaque-id>', 'Opaque local account ID')
+    .action(async (options: { provider?: string; account?: string }) => {
+      const argv = ['models', '--provider', options.provider ?? '']
+      if (options.account) argv.push('--account', options.account)
+      return runProviderAccounts(argv)
+    })
+  for (const command of ['set-default', 'remove'] as const) {
+    providerAccounts
+      .command(command)
+      .description(command === 'remove' ? 'Remove a provider account' : 'Select the default provider account')
+      .requiredOption('--provider <provider>', 'Provider: codex or claude')
+      .requiredOption('--account <opaque-id>', 'Opaque local account ID')
+      .action(async (options: { provider?: string; account?: string }) =>
+        runProviderAccounts([
+          command,
+          '--provider',
+          options.provider ?? '',
+          '--account',
+          options.account ?? '',
+        ]),
+      )
   }
 
   // claude auth

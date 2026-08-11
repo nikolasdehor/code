@@ -28,18 +28,23 @@ import {
   readClaudeNativeCredentialsAsync,
   type ClaudeNativeCredentialBlob,
 } from '../../utils/claudeNativeCredentials.js'
+import { parseProviderLoginArgs } from '../../utils/providerAccounts/loginArgs.js'
+import { listProviderAccountSummaries } from '../../utils/providerAccounts/store.js'
+import { formatProviderAccountStatus } from '../../utils/providerAccounts/status.js'
 
 function ClaudeLogin({
   acceptedAt,
   onDone,
+  reconnectLocalAccountId,
 }: {
   acceptedAt: string
   onDone: LocalJSXCommandOnDone
+  reconnectLocalAccountId?: string
 }) {
   const handleAuthenticated = React.useCallback(
     async (
       _tokens: unknown,
-      persistCredentials: () => void,
+      persistCredentials: (options?: { reconnectLocalAccountId?: string }) => void,
       candidateCredentials: ClaudeNativeCredentialBlob,
     ) => {
       clearClaudeNativeModelsCache()
@@ -53,7 +58,7 @@ function ClaudeLogin({
         )
       }
       try {
-        persistCredentials()
+        persistCredentials({ reconnectLocalAccountId })
       } catch (error) {
         // Do not leave an in-memory Claude catalog unlocked when secure
         // persistence failed. A failed optional login must not affect Verboo.
@@ -68,6 +73,8 @@ function ClaudeLogin({
     [onDone],
   )
   const status = useClaudeNativeOAuthFlow({
+    additive: true,
+    reconnectLocalAccountId,
     acceptedAt,
     onAuthenticated: handleAuthenticated,
   })
@@ -112,9 +119,23 @@ function ClaudeLogin({
   )
 }
 
-function ClaudeRiskDisclosure({ onDone }: { onDone: LocalJSXCommandOnDone }) {
+function ClaudeRiskDisclosure({
+  onDone,
+  reconnectLocalAccountId,
+}: {
+  onDone: LocalJSXCommandOnDone
+  reconnectLocalAccountId?: string
+}) {
   const [acceptedAt, setAcceptedAt] = React.useState<string | null>(null)
-  if (acceptedAt) return <ClaudeLogin acceptedAt={acceptedAt} onDone={onDone} />
+  if (acceptedAt) {
+    return (
+      <ClaudeLogin
+        acceptedAt={acceptedAt}
+        onDone={onDone}
+        reconnectLocalAccountId={reconnectLocalAccountId}
+      />
+    )
+  }
 
   const cancel = () =>
     onDone('Claude não habilitado. O Verboo continua disponível.', {
@@ -172,19 +193,27 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
     return
   }
 
-  const action = args.trim().toLowerCase() || 'login'
-  if (action === 'status') {
-    const credentials = await readClaudeNativeCredentialsAsync()
-    onDone(
-      credentials
-        ? `Claude conectado${credentials.email ? ` (${credentials.email})` : ''}. Aceite de risco v${credentials.riskAcceptance.version}${hasCurrentClaudeRiskAcceptance(credentials) ? ' válido' : ' desatualizado'}. Use /claude login para trocar de conta ou /claude logout para sair.`
-        : 'Claude não conectado. Execute /claude para desbloquear modelos adicionais.',
-      { display: 'system' },
-    )
+  const action = parseProviderLoginArgs(args)
+  if (action.action === 'status') {
+    try {
+      const accounts = listProviderAccountSummaries()
+      const status = formatProviderAccountStatus('claude', accounts)
+      if (!accounts.some(account => account.provider === 'claude')) {
+        onDone(status, { display: 'system' })
+        return
+      }
+      const credentials = await readClaudeNativeCredentialsAsync()
+      const risk = credentials
+        ? ` Aceite de risco v${credentials.riskAcceptance.version}${hasCurrentClaudeRiskAcceptance(credentials) ? ' válido' : ' desatualizado'}.`
+        : ''
+      onDone(`${status}${risk}`, { display: 'system' })
+    } catch {
+      onDone('Não foi possível consultar as contas Claude no armazenamento seguro. Tente novamente.', { display: 'system' })
+    }
     return
   }
 
-  if (action === 'logout') {
+  if (action.action === 'logout') {
     const claudeIds = new Set(
       (getCachedClaudeNativeModels() ?? []).map(model => model.id),
     )
@@ -219,9 +248,14 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
     return
   }
 
-  if (action !== 'login') {
+  if (action.action !== 'login') {
     onDone('Uso: /claude [login|status|logout]', { display: 'system' })
     return
   }
-  return <ClaudeRiskDisclosure onDone={onDone} />
+  return (
+    <ClaudeRiskDisclosure
+      onDone={onDone}
+      reconnectLocalAccountId={action.reconnectLocalAccountId}
+    />
+  )
 }

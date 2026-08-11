@@ -7,29 +7,27 @@ import {
   CLAUDE_NATIVE_TOKEN_URL,
   CLAUDE_RISK_NOTICE_VERSION,
 } from '../services/api/claudeNativeConfig.js'
+import {
+  normalizeClaudeNativeCredentials,
+  type ClaudeNativeCredentialBlob,
+  type ClaudeRiskAcceptance,
+} from './providerAccounts/credentials.js'
+import {
+  removeProviderAccount,
+  upsertProviderAccount,
+} from './providerAccounts/store.js'
+import { normalizeProviderAccounts } from './providerAccounts/store.js'
+import { AccountWorkRegistry } from './providerAccounts/refreshRegistry.js'
+import type { LocalProviderAccountId } from './providerAccounts/types.js'
+
+export type {
+  ClaudeNativeCredentialBlob,
+  ClaudeRiskAcceptance,
+} from './providerAccounts/credentials.js'
 
 export const CLAUDE_NATIVE_STORAGE_KEY = 'claudeNative' as const
 const REFRESH_SKEW_MS = 60_000
 const REFRESH_FAILURE_COOLDOWN_MS = 60_000
-
-export type ClaudeRiskAcceptance = {
-  version: number
-  acceptedAt: string
-  accountId: string
-}
-
-export type ClaudeNativeCredentialBlob = {
-  accessToken: string
-  refreshToken?: string
-  expiresAt?: number
-  scopes: string[]
-  accountId: string
-  email?: string
-  organizationId?: string
-  riskAcceptance: ClaudeRiskAcceptance
-  lastRefreshAt?: number
-  lastRefreshFailureAt?: number
-}
 
 type RefreshResponse = {
   access_token?: string
@@ -38,11 +36,13 @@ type RefreshResponse = {
   scope?: string
 }
 
-let inFlightRefresh: Promise<{
+type ClaudeRefreshResult = {
   refreshed: boolean
   credentials?: ClaudeNativeCredentialBlob
-}> | null = null
-let inMemoryLastRefreshFailureAt: number | null = null
+}
+
+const claudeRefreshRegistry = new AccountWorkRegistry<ClaudeRefreshResult>()
+const inMemoryLastRefreshFailureAt = new Map<string, number>()
 
 function trimmed(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
@@ -50,41 +50,6 @@ function trimmed(value: unknown): string | undefined {
 
 function finiteNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
-}
-
-function normalizeRiskAcceptance(value: unknown): ClaudeRiskAcceptance | undefined {
-  if (!value || typeof value !== 'object') return undefined
-  const record = value as Record<string, unknown>
-  const version = finiteNumber(record.version)
-  const acceptedAt = trimmed(record.acceptedAt)
-  const accountId = trimmed(record.accountId)
-  if (version === undefined || !acceptedAt || !accountId) return undefined
-  return { version, acceptedAt, accountId }
-}
-
-function normalizeCredentials(value: unknown): ClaudeNativeCredentialBlob | undefined {
-  if (!value || typeof value !== 'object') return undefined
-  const record = value as Record<string, unknown>
-  const accessToken = trimmed(record.accessToken)
-  const accountId = trimmed(record.accountId)
-  const riskAcceptance = normalizeRiskAcceptance(record.riskAcceptance)
-  if (!accessToken || !accountId || !riskAcceptance) return undefined
-  if (riskAcceptance.accountId !== accountId) return undefined
-
-  return {
-    accessToken,
-    refreshToken: trimmed(record.refreshToken),
-    expiresAt: finiteNumber(record.expiresAt),
-    scopes: Array.isArray(record.scopes)
-      ? record.scopes.filter((scope): scope is string => typeof scope === 'string')
-      : [],
-    accountId,
-    email: trimmed(record.email),
-    organizationId: trimmed(record.organizationId),
-    riskAcceptance,
-    lastRefreshAt: finiteNumber(record.lastRefreshAt),
-    lastRefreshFailureAt: finiteNumber(record.lastRefreshFailureAt),
-  }
 }
 
 function storage() {
@@ -101,21 +66,39 @@ export function hasCurrentClaudeRiskAcceptance(
   )
 }
 
-export function readClaudeNativeCredentials(): ClaudeNativeCredentialBlob | undefined {
+export function readClaudeNativeCredentials(
+  localAccountId?: LocalProviderAccountId,
+): ClaudeNativeCredentialBlob | undefined {
   if (isBareMode()) return undefined
   try {
-    return normalizeCredentials(storage().read()?.claudeNative)
+    const data = storage().read()
+    const providerAccounts = normalizeProviderAccounts(data?.providerAccounts)
+    const accountId = localAccountId ?? providerAccounts?.claude.defaultAccountId
+    const account = accountId
+      ? providerAccounts?.claude.accounts[accountId]
+      : undefined
+    if (account?.credential) return account.credential
+    return normalizeClaudeNativeCredentials(data?.claudeNative)
   } catch {
     return undefined
   }
 }
 
-export async function readClaudeNativeCredentialsAsync(): Promise<
+export async function readClaudeNativeCredentialsAsync(
+  localAccountId?: LocalProviderAccountId,
+): Promise<
   ClaudeNativeCredentialBlob | undefined
 > {
   if (isBareMode()) return undefined
   try {
-    return normalizeCredentials((await storage().readAsync())?.claudeNative)
+    const data = await storage().readAsync()
+    const providerAccounts = normalizeProviderAccounts(data?.providerAccounts)
+    const accountId = localAccountId ?? providerAccounts?.claude.defaultAccountId
+    const account = accountId
+      ? providerAccounts?.claude.accounts[accountId]
+      : undefined
+    if (account?.credential) return account.credential
+    return normalizeClaudeNativeCredentials(data?.claudeNative)
   } catch {
     return undefined
   }
@@ -123,11 +106,12 @@ export async function readClaudeNativeCredentialsAsync(): Promise<
 
 export function saveClaudeNativeCredentials(
   credentials: ClaudeNativeCredentialBlob,
+  options?: { localAccountId?: LocalProviderAccountId; additive?: boolean },
 ): { success: boolean; warning?: string } {
   if (isBareMode()) {
     return { success: false, warning: 'Bare mode: secure storage is disabled.' }
   }
-  const normalized = normalizeCredentials(credentials)
+  const normalized = normalizeClaudeNativeCredentials(credentials)
   if (!normalized || !hasCurrentClaudeRiskAcceptance(normalized)) {
     return {
       success: false,
@@ -135,19 +119,46 @@ export function saveClaudeNativeCredentials(
     }
   }
   const secureStorage = storage()
-  const previous = secureStorage.read() || {}
-  const next = {
-    ...(previous as Record<string, unknown>),
-    [CLAUDE_NATIVE_STORAGE_KEY]: {
+  const previousData = secureStorage.read() || {}
+  const providerAccounts = normalizeProviderAccounts(previousData.providerAccounts)
+  if (!providerAccounts && !options?.additive) {
+    const next = {
+      ...(previousData as Record<string, unknown>),
+      [CLAUDE_NATIVE_STORAGE_KEY]: {
+        ...normalized,
+        lastRefreshAt: normalized.lastRefreshAt ?? Date.now(),
+      },
+    }
+    const result = secureStorage.update(next as typeof previousData)
+    if (result.success) {
+      const key = accountRefreshKey(options?.localAccountId, normalized)
+      if (normalized.lastRefreshFailureAt === undefined) {
+        inMemoryLastRefreshFailureAt.delete(key)
+      } else {
+        inMemoryLastRefreshFailureAt.set(key, normalized.lastRefreshFailureAt)
+      }
+    }
+    return result
+  }
+
+  try {
+    upsertProviderAccount('claude', {
       ...normalized,
       lastRefreshAt: normalized.lastRefreshAt ?? Date.now(),
-    },
+    }, { reconnectLocalAccountId: options?.localAccountId })
+    const key = accountRefreshKey(options?.localAccountId, normalized)
+    if (normalized.lastRefreshFailureAt === undefined) {
+      inMemoryLastRefreshFailureAt.delete(key)
+    } else {
+      inMemoryLastRefreshFailureAt.set(key, normalized.lastRefreshFailureAt)
+    }
+    return { success: true }
+  } catch (error) {
+    return {
+      success: false,
+      warning: error instanceof Error ? error.message : 'secure_storage_write_failed',
+    }
   }
-  const result = secureStorage.update(next as typeof previous)
-  if (result.success) {
-    inMemoryLastRefreshFailureAt = normalized.lastRefreshFailureAt ?? null
-  }
-  return result
 }
 
 export function clearClaudeNativeCredentials(): {
@@ -155,12 +166,28 @@ export function clearClaudeNativeCredentials(): {
   warning?: string
 } {
   if (isBareMode()) return { success: true }
+  const raw = storage().read() || {}
+  const providerAccounts = normalizeProviderAccounts(raw.providerAccounts)
+  const defaultAccountId = providerAccounts?.claude.defaultAccountId
+  if (defaultAccountId) {
+    try {
+      removeProviderAccount('claude', defaultAccountId)
+      inMemoryLastRefreshFailureAt.clear()
+      return { success: true }
+    } catch (error) {
+      return {
+        success: false,
+        warning: error instanceof Error ? error.message : 'secure_storage_write_failed',
+      }
+    }
+  }
+
   const secureStorage = storage()
-  const previous = secureStorage.read() || {}
+  const previous = raw
   const next = { ...(previous as Record<string, unknown>) }
   delete next[CLAUDE_NATIVE_STORAGE_KEY]
   const result = secureStorage.update(next as typeof previous)
-  if (result.success) inMemoryLastRefreshFailureAt = null
+  if (result.success) inMemoryLastRefreshFailureAt.clear()
   return result
 }
 
@@ -171,21 +198,29 @@ function shouldRefresh(credentials: ClaudeNativeCredentialBlob): boolean {
   )
 }
 
-function coolingDown(credentials: ClaudeNativeCredentialBlob): boolean {
+function accountRefreshKey(
+  localAccountId: LocalProviderAccountId | undefined,
+  credentials: ClaudeNativeCredentialBlob,
+): string {
+  return `claude:${localAccountId ?? credentials.accountId}`
+}
+
+function coolingDown(
+  credentials: ClaudeNativeCredentialBlob,
+  key: string,
+): boolean {
   const failedAt = Math.max(
     credentials.lastRefreshFailureAt ?? 0,
-    inMemoryLastRefreshFailureAt ?? 0,
+    inMemoryLastRefreshFailureAt.get(key) ?? 0,
   )
   return Boolean(failedAt && Date.now() - failedAt < REFRESH_FAILURE_COOLDOWN_MS)
 }
 
 export async function refreshClaudeNativeAccessTokenIfNeeded(options?: {
   force?: boolean
-}): Promise<{
-  refreshed: boolean
-  credentials?: ClaudeNativeCredentialBlob
-}> {
-  const current = await readClaudeNativeCredentialsAsync()
+  localAccountId?: LocalProviderAccountId
+}): Promise<ClaudeRefreshResult> {
+  const current = await readClaudeNativeCredentialsAsync(options?.localAccountId)
   if (!current || !hasCurrentClaudeRiskAcceptance(current)) {
     return { refreshed: false }
   }
@@ -193,12 +228,12 @@ export async function refreshClaudeNativeAccessTokenIfNeeded(options?: {
   if (!options?.force && !shouldRefresh(current)) {
     return { refreshed: false, credentials: current }
   }
-  if (!options?.force && coolingDown(current)) {
+  const refreshKey = accountRefreshKey(options?.localAccountId, current)
+  if (!options?.force && coolingDown(current, refreshKey)) {
     return { refreshed: false, credentials: current }
   }
-  if (inFlightRefresh) return inFlightRefresh
 
-  inFlightRefresh = (async () => {
+  return claudeRefreshRegistry.run(refreshKey, async () => {
     try {
       const form = new URLSearchParams({
         grant_type: 'refresh_token',
@@ -243,18 +278,19 @@ export async function refreshClaudeNativeAccessTokenIfNeeded(options?: {
         lastRefreshAt: Date.now(),
         lastRefreshFailureAt: undefined,
       }
-      const saved = saveClaudeNativeCredentials(next)
+      const saved = saveClaudeNativeCredentials(next, {
+        localAccountId: options?.localAccountId,
+      })
       if (!saved.success) throw new Error(saved.warning)
-      inMemoryLastRefreshFailureAt = null
       return { refreshed: true, credentials: next }
     } catch (error) {
       const failedAt = Date.now()
-      inMemoryLastRefreshFailureAt = failedAt
-      saveClaudeNativeCredentials({ ...current, lastRefreshFailureAt: failedAt })
+      inMemoryLastRefreshFailureAt.set(refreshKey, failedAt)
+      saveClaudeNativeCredentials(
+        { ...current, lastRefreshFailureAt: failedAt },
+        { localAccountId: options?.localAccountId },
+      )
       throw error
-    } finally {
-      inFlightRefresh = null
     }
-  })()
-  return inFlightRefresh
+  })
 }
