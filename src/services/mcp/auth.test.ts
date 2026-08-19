@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { validateOAuthCallbackParams } from './auth.js'
+import {
+  InvalidClientError,
+  InvalidGrantError,
+  UnauthorizedClientError,
+} from '@modelcontextprotocol/sdk/server/auth/errors.js'
+
+import {
+  getRefreshCredentialInvalidationScope,
+  validateOAuthCallbackParams,
+} from './auth.js'
 
 test('OAuth callback rejects error parameters before state validation can be bypassed', () => {
   const result = validateOAuthCallbackParams(
@@ -57,5 +66,33 @@ test('OAuth callback accepts authorization codes only when state matches', () =>
       'expected-state',
     ),
     { type: 'state_mismatch' },
+  )
+})
+
+test('OAuth refresh invalidates stale client registrations', () => {
+  assert.equal(
+    getRefreshCredentialInvalidationScope(
+      new InvalidClientError('client registration expired'),
+    ),
+    'all',
+  )
+  assert.equal(
+    getRefreshCredentialInvalidationScope(
+      new UnauthorizedClientError('refresh grant no longer allowed'),
+    ),
+    'all',
+  )
+})
+
+test('OAuth refresh keeps the client registration for an invalid refresh token', () => {
+  assert.equal(
+    getRefreshCredentialInvalidationScope(
+      new InvalidGrantError('refresh token expired'),
+    ),
+    'tokens',
+  )
+  assert.equal(
+    getRefreshCredentialInvalidationScope(new Error('network unavailable')),
+    undefined,
   )
 })

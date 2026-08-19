@@ -7,11 +7,13 @@ import {
   refreshAuthorization as sdkRefreshAuthorization,
 } from '@modelcontextprotocol/sdk/client/auth.js'
 import {
+  InvalidClientError,
   InvalidGrantError,
   OAuthError,
   ServerError,
   TemporarilyUnavailableError,
   TooManyRequestsError,
+  UnauthorizedClientError,
 } from '@modelcontextprotocol/sdk/server/auth/errors.js'
 import {
   type AuthorizationServerMetadata,
@@ -73,6 +75,7 @@ type MCPRefreshFailureReason =
   | 'metadata_discovery_failed'
   | 'no_client_info'
   | 'no_tokens_returned'
+  | 'invalid_client'
   | 'invalid_grant'
   | 'transient_retries_exhausted'
   | 'request_failed'
@@ -93,6 +96,29 @@ type MCPOAuthFlowErrorReason =
   | 'unknown'
 
 const MAX_LOCK_RETRIES = 5
+
+type RefreshCredentialInvalidationScope = 'all' | 'tokens'
+
+/**
+ * Decide which persisted OAuth state is no longer trustworthy after a refresh
+ * failure. A rejected refresh token can be replaced while keeping the client
+ * registration, but invalid_client/unauthorized_client means the registration
+ * itself is stale and the next auth attempt must perform CIMD/DCR again.
+ */
+export function getRefreshCredentialInvalidationScope(
+  error: unknown,
+): RefreshCredentialInvalidationScope | undefined {
+  if (
+    error instanceof InvalidClientError ||
+    error instanceof UnauthorizedClientError
+  ) {
+    return 'all'
+  }
+  if (error instanceof InvalidGrantError) {
+    return 'tokens'
+  }
+  return undefined
+}
 
 /**
  * OAuth query parameters that should be redacted from logs.
@@ -1591,7 +1617,7 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
     const data = await storage.readAsync()
     const serverKey = getServerKey(this.serverName, this.serverConfig)
 
-    const tokenData = data?.mcpOAuth?.[serverKey]
+    let tokenData = data?.mcpOAuth?.[serverKey]
 
     // XAA: a cached id_token plays the same UX role as a refresh_token — run
     // the silent exchange to get a fresh access_token without a browser. The
@@ -1716,8 +1742,23 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
         }
         logMCPDebug(
           this.serverName,
-          `Token refresh failed, returning current tokens`,
+          `Token refresh did not return new tokens; checking stored credentials`,
         )
+
+        // Refresh may have proved that the token or the OAuth client
+        // registration is no longer valid. Re-read storage after the refresh
+        // attempt so this call does not immediately hand the SDK the stale
+        // refresh token again. Returning undefined lets the normal MCP auth
+        // flow perform a clean authorization (and CIMD/DCR registration when
+        // the client itself was rejected).
+        tokenData = (await storage.readAsync())?.mcpOAuth?.[serverKey]
+        if (!tokenData?.accessToken) {
+          logMCPDebug(
+            this.serverName,
+            `Refresh invalidated stored credentials; authorization required`,
+          )
+          return undefined
+        }
       } catch (error) {
         logMCPDebug(
           this.serverName,
@@ -1726,11 +1767,17 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
       }
     }
 
+    if (!tokenData) {
+      return undefined
+    }
+
+    const currentExpiresIn = (tokenData.expiresAt - Date.now()) / 1000
+
     // Return current tokens (may be expired if refresh failed or not needed yet)
     const tokens = {
       access_token: tokenData.accessToken,
       refresh_token: needsStepUp ? undefined : tokenData.refreshToken,
-      expires_in: expiresIn,
+      expires_in: currentExpiresIn,
       scope: tokenData.scope,
       token_type: 'Bearer',
     }
@@ -1738,7 +1785,7 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
     logMCPDebug(this.serverName, `Returning tokens`)
     logMCPDebug(this.serverName, `Token length: ${tokens.access_token?.length}`)
     logMCPDebug(this.serverName, `Has refresh token: ${!!tokens.refresh_token}`)
-    logMCPDebug(this.serverName, `Expires in: ${Math.floor(expiresIn)}s`)
+    logMCPDebug(this.serverName, `Expires in: ${Math.floor(currentExpiresIn)}s`)
 
     return tokens
   }
@@ -2326,13 +2373,18 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
         emitRefreshEvent('failure', 'no_tokens_returned')
         return undefined
       } catch (error) {
-        // Invalid grant means the refresh token itself is invalid/revoked/expired.
-        // But another process may have already refreshed successfully — check first.
-        if (error instanceof InvalidGrantError) {
+        const invalidationScope = getRefreshCredentialInvalidationScope(error)
+        if (invalidationScope) {
+          const clientRegistrationInvalid = invalidationScope === 'all'
           logMCPDebug(
             this.serverName,
-            `Token refresh failed with invalid_grant: ${error.message}`,
+            clientRegistrationInvalid
+              ? `Token refresh rejected the OAuth client (${error instanceof OAuthError ? error.errorCode : 'invalid_client'}): ${errorMessage(error)}`
+              : `Token refresh failed with invalid_grant: ${errorMessage(error)}`,
           )
+
+          // A concurrent process may have completed refresh while this one was
+          // in flight. Prefer its fresh token before clearing shared state.
           clearKeychainCache()
           const storage = getSecureStorage()
           const data = storage.read()
@@ -2359,10 +2411,15 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
           }
           logMCPDebug(
             this.serverName,
-            `No valid tokens in storage, clearing stored tokens`,
+            clientRegistrationInvalid
+              ? `No valid tokens in storage, clearing the stale OAuth client registration`
+              : `No valid tokens in storage, clearing stored tokens`,
           )
-          await this.invalidateCredentials('tokens')
-          emitRefreshEvent('failure', 'invalid_grant')
+          await this.invalidateCredentials(invalidationScope)
+          emitRefreshEvent(
+            'failure',
+            clientRegistrationInvalid ? 'invalid_client' : 'invalid_grant',
+          )
           return undefined
         }
 
