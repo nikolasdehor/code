@@ -1389,6 +1389,70 @@ test('streaming: Crof-style empty stop chunk with tools completes without visibl
   expect(stopEvent?.delta?.stop_reason).toBe('end_turn')
 })
 
+test.each([
+  {
+    finishReason: 'stop',
+    expectedStopReason: 'end_turn',
+    expectedWarning: null,
+  },
+  {
+    finishReason: 'length',
+    expectedStopReason: 'max_tokens',
+    expectedWarning: '[Response truncated',
+  },
+])(
+  'streaming: finish-only $finishReason without tools is a valid terminal response',
+  async ({ finishReason, expectedStopReason, expectedWarning }) => {
+    globalThis.fetch = (async () => {
+      const chunks = makeStreamChunks([
+        {
+          id: `chatcmpl-empty-${finishReason}`,
+          object: 'chat.completion.chunk',
+          model: 'fake-model',
+          choices: [
+            {
+              index: 0,
+              delta: {},
+              finish_reason: finishReason,
+            },
+          ],
+        },
+      ])
+      return makeSseResponse(chunks)
+    }) as FetchType
+
+    const client = createOpenAIShimClient({}) as OpenAIShimClient
+    const result = await client.beta.messages
+      .create({
+        model: 'fake-model',
+        messages: [{ role: 'user', content: 'hello' }],
+        max_tokens: 64,
+        stream: true,
+      })
+      .withResponse()
+
+    const events: Array<Record<string, unknown>> = []
+    for await (const event of result.data) events.push(event)
+
+    const stopEvent = events.find((event) => event.type === 'message_delta') as
+      | { delta?: { stop_reason?: string } }
+      | undefined
+    const visibleText = events
+      .map(
+        (event) =>
+          (event as { delta?: { type?: string; text?: string } }).delta,
+      )
+      .filter((delta) => delta?.type === 'text_delta')
+      .map((delta) => delta?.text ?? '')
+      .join('')
+
+    expect(stopEvent?.delta?.stop_reason).toBe(expectedStopReason)
+    if (expectedWarning) expect(visibleText).toContain(expectedWarning)
+    else expect(visibleText).toBe('')
+    expect(events.at(-1)?.type).toBe('message_stop')
+  },
+)
+
 test('uses max_tokens instead of max_completion_tokens for local providers', async () => {
   process.env.OPENAI_BASE_URL = 'http://localhost:11434/v1'
 
