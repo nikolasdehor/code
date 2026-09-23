@@ -35,7 +35,6 @@ const marketplaceGroupSchema = z
     trialDays: z.number().int().positive().nullable().optional(),
     trialPaymentMethodRequired: z.boolean().default(false),
     trialEligible: z.boolean(),
-    maxTokensPerSec: z.number().positive().nullable().optional(),
     paymentProvider: paymentProviderSchema,
     apiOnly: z.boolean(),
     isMember: z.boolean(),
