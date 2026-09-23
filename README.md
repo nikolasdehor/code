@@ -80,6 +80,10 @@ approval flow.
 
 ## Agent Model Routing
 
+Ao usar `jev-router`, a CLI mostra o modelo físico escolhido em cada resposta
+como `jev-router → glm-5.3-flash` (exemplo). O alias solicitado permanece no
+protocolo; a escolha vem do metadado da resposta do roteador.
+
 Verboo resolves subagent models against the authenticated `/models` catalog and
 preserves the complete server-provided ID, including plan prefixes such as
 `max/qwen3.6-27b`. Router-provided `agent_model_roles` are authoritative; the

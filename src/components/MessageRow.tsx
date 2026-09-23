@@ -218,7 +218,7 @@ function MessageRowImpl(t0) {
   }
   let t5;
   if ($[34] !== displayMsg || $[35] !== isTranscriptMode) {
-    t5 = isTranscriptMode && displayMsg.type === "assistant" && displayMsg.message.content.some(_temp) && (displayMsg.timestamp || displayMsg.message.model);
+    t5 = displayMsg.type === "assistant" && (isTranscriptMode && displayMsg.message.content.some(_temp) && (displayMsg.timestamp || displayMsg.message.model) || displayMsg.message.content.length > 0 && typeof displayMsg.message.metadata?.selected_model === "string");
     $[34] = displayMsg;
     $[35] = isTranscriptMode;
     $[36] = t5;

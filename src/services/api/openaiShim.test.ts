@@ -315,6 +315,38 @@ test('adds Verboo session header only for Verboo router requests', async () => {
   )
 })
 
+test.each([false, true])('jev-router exposes the selected model in message metadata (stream=%s)', async stream => {
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  process.env.OPENAI_BASE_URL = VERBOO_ROUTER_URL
+  globalThis.fetch = (async () => {
+    const headers = { 'X-Verboo-Selected-Model': 'glm-5.3-flash' }
+    if (stream) {
+      return makeSseResponse(makeStreamChunks([
+        { choices: [{ delta: { content: 'ok' }, finish_reason: null }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ]), headers)
+    }
+    return new Response(JSON.stringify({
+      id: 'chatcmpl-selected',
+      model: 'jev-router',
+      choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+    }), { headers: { ...headers, 'Content-Type': 'application/json' } })
+  }) as unknown as FetchType
+
+  const client = createOpenAIShimClient({}) as OpenAIShimClient
+  const result = await client.beta.messages.create({
+    model: 'jev-router',
+    messages: [{ role: 'user', content: 'hello' }],
+    max_tokens: 64,
+    stream,
+  }) as Record<string, unknown> | AsyncIterable<Record<string, unknown>>
+  const message = stream
+    ? (await Array.fromAsync(result as AsyncIterable<Record<string, unknown>>))[0]?.message as Record<string, unknown>
+    : result as Record<string, unknown>
+  expect(message.model).toBe('jev-router')
+  expect(message.metadata).toEqual({ selected_model: 'glm-5.3-flash' })
+})
+
 test('captures router rate limit headers from successful Verboo router responses', async () => {
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
   process.env.OPENAI_BASE_URL = VERBOO_ROUTER_URL
