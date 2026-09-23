@@ -130,6 +130,22 @@ const GITHUB_429_MAX_DELAY_SEC = 32
 const GEMINI_API_HOST = 'generativelanguage.googleapis.com'
 const VERBOO_SESSION_HEADER = 'X-Verboo-Session-Id'
 const VERBOO_REQUEST_ID_HEADER = 'x-verboo-request-id'
+const VERBOO_SELECTED_MODEL_HEADER = 'x-verboo-selected-model'
+
+function selectedModelMetadata(
+  response: Response,
+  requestedModel: string,
+  baseUrl: string,
+): { selected_model: string } | undefined {
+  if (!isVerbooRouterUrl(baseUrl) || requestedModel.split('/').at(-1) !== 'jev-router') {
+    return undefined
+  }
+  const selected = response.headers.get(VERBOO_SELECTED_MODEL_HEADER)
+  if (!selected || selected.length > 128 || !/^[A-Za-z0-9._:/+-]+$/.test(selected)) {
+    return undefined
+  }
+  return { selected_model: selected }
+}
 
 type ClientDiagnosticStage =
   | 'client_decode'
@@ -1429,6 +1445,7 @@ function createWarmingHintController(
 async function* openaiStreamToAnthropic(
   response: Response,
   model: string,
+  routingMetadata?: { selected_model: string },
   signal?: AbortSignal,
   warmingHint?: WarmingHintController,
   advertisedToolNames: readonly string[] = [],
@@ -1484,6 +1501,7 @@ async function* openaiStreamToAnthropic(
       role: 'assistant',
       content: [],
       model,
+      ...(routingMetadata && { metadata: routingMetadata }),
       stop_reason: null,
       stop_sequence: null,
       usageReported: false,
@@ -2762,6 +2780,16 @@ class OpenAIShimMessages {
         throw e
       }
       httpResponse = response
+      const routingMetadata = selectedModelMetadata(
+        response,
+        request.resolvedModel,
+        request.baseUrl,
+      )
+
+      const withRoutingMetadata = <T extends object>(message: T): T =>
+        routingMetadata
+          ? { ...message, metadata: routingMetadata }
+          : message
 
       if (params.stream) {
         const isResponsesStream = response.url?.includes('/responses')
@@ -2779,6 +2807,7 @@ class OpenAIShimMessages {
             : openaiStreamToAnthropic(
                 response,
                 request.resolvedModel,
+                routingMetadata,
                 options?.signal,
                 warmingHint,
                 advertisedToolNames,
@@ -2827,24 +2856,24 @@ class OpenAIShimMessages {
               recoverableToolNames,
             )
           }
-          return self._convertNonStreamingResponse(
+          return withRoutingMetadata(self._convertNonStreamingResponse(
             parsed,
             request.resolvedModel,
             advertisedToolNames,
             recoverableToolNames,
-          )
+          ))
         }
       }
 
       const contentType = response.headers.get('content-type') ?? ''
       if (contentType.includes('application/json')) {
         const data = await readSuccessfulResponseJson<any>(response)
-        return self._convertNonStreamingResponse(
+        return withRoutingMetadata(self._convertNonStreamingResponse(
           data,
           request.resolvedModel,
           advertisedToolNames,
           recoverableToolNames,
-        )
+        ))
       }
 
       const textBody = await readSuccessfulResponseText(response).catch(
