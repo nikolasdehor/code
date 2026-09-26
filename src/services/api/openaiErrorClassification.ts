@@ -5,6 +5,9 @@ export type OpenAICompatibilityFailureCategory =
   | 'network_error'
   | 'auth_invalid'
   | 'free_tokens_required'
+  | 'usage_window_exhausted'
+  | 'usage_accounting_pending'
+  | 'usage_accounting_unavailable'
   | 'free_tokens_accounting_pending'
   | 'terms_required'
   | 'rate_limited'
@@ -39,6 +42,9 @@ const OPENAI_COMPATIBILITY_FAILURE_CATEGORIES: ReadonlySet<OpenAICompatibilityFa
     'network_error',
     'auth_invalid',
     'free_tokens_required',
+    'usage_window_exhausted',
+    'usage_accounting_pending',
+    'usage_accounting_unavailable',
     'free_tokens_accounting_pending',
     'terms_required',
     'rate_limited',
@@ -272,6 +278,13 @@ export function classifyOpenAIHttpFailure(options: {
   url?: string
 }): OpenAICompatibilityFailure {
   const body = options.body ?? ''
+  if (options.status === 429 || options.status === 503) {
+    try {
+      const parsed = JSON.parse(body) as { error?: { code?: string } }
+      const code = parsed.error?.code
+      if (code === 'usage_window_exhausted' || code === 'usage_accounting_pending' || code === 'usage_accounting_unavailable') return { source: 'http', category: code, retryable: false, status: options.status, code, message: body, hint: 'Consulte /usage para acompanhar seu uso e a renovação.' }
+    } catch { /* Other providers may return non-JSON errors. */ }
+  }
   const hostname = options.url ? getHostname(options.url) : null
   const isLocalHost = isLocalhostLikeHostname(hostname)
 

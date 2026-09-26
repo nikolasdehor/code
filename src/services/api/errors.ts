@@ -128,6 +128,11 @@ function mapOpenAICompatibilityFailureToAssistantMessage(options: {
 
     case 'free_tokens_required':
       return createAssistantAPIErrorMessage({ content: new FreeTokensRequiredError().message, error: 'invalid_request' })
+    case 'usage_window_exhausted':
+      return createAssistantAPIErrorMessage({ content: 'O limite de uso deste plano foi atingido. Consulte /usage para ver a porcentagem consumida e o horário de renovação.', error: 'rate_limit' })
+    case 'usage_accounting_pending':
+    case 'usage_accounting_unavailable':
+      return createAssistantAPIErrorMessage({ content: 'O uso está pausado até a confirmação das solicitações anteriores. Consulte /usage e tente novamente mais tarde.', error: 'invalid_request' })
     case 'free_tokens_accounting_pending':
       return createAssistantAPIErrorMessage({ content: 'O limite de solicitações aguardando contabilização foi atingido. O uso gratuito está pausado até a confirmação do consumo; você pode ativar um plano pago.', error: 'invalid_request' })
     case 'terms_required':

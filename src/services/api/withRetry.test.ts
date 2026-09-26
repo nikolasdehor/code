@@ -29,6 +29,7 @@ const envKeys = [
   'OPENAI_MODEL',
   'OPENAI_BASE_URL',
   'OPENAI_API_BASE',
+  'CLAUDE_CODE_UNATTENDED_RETRY',
 ] as const
 
 beforeEach(async () => {
@@ -62,6 +63,9 @@ async function importFreshWithRetryModule(
     | 'foundry' = 'firstParty',
 ) {
   mock.restore()
+  // Open builds omit feature-gated internal source files. Keep raw Bun tests
+  // deterministic while exercising the persistent retry branch explicitly.
+  mock.module('bun:bundle', () => ({ feature: (name: string) => name === 'UNATTENDED_RETRY' }))
   mock.module('src/utils/model/providers.js', () => ({
     ...actualProviders,
     getAPIProvider: () => provider,
@@ -69,6 +73,16 @@ async function importFreshWithRetryModule(
   }))
   return import(`./withRetry.js?ts=${Date.now()}-${Math.random()}`)
 }
+
+test('quota windows stop after one attempt even with a retry budget', async () => {
+  process.env.CLAUDE_CODE_UNATTENDED_RETRY = '1'
+  const { withRetry, CannotRetryError } = await importFreshWithRetryModule('openai')
+  let calls = 0
+  const error = APIError.generate(429, { error: { code: 'usage_window_exhausted', message: '[openai_category=usage_window_exhausted] Uso pausado.' } }, 'Uso pausado.', new Headers())
+  const run = withRetry(async () => ({} as import('@anthropic-ai/sdk').default), async () => { calls++; throw error }, { model: 'verboo', thinkingConfig: { type: 'disabled' }, maxRetries: 10 })
+  await expect(run.next()).rejects.toBeInstanceOf(CannotRetryError)
+  expect(calls).toBe(1)
+})
 
 // --- parseOpenAIDuration ---
 describe('parseOpenAIDuration', () => {

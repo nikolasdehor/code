@@ -47,6 +47,7 @@ import {
 } from '../rateLimitMocking.js'
 import { REPEATED_529_ERROR_MESSAGE } from './errors.js'
 import { extractConnectionErrorDetails } from './errorUtils.js'
+import { isUsageWindowStop } from './usageWindowErrors.js'
 
 const abortError = () => new APIUserAbortError()
 
@@ -266,6 +267,7 @@ export async function* withRetry<T>(
       return await operation(client, attempt, retryContext)
     } catch (error) {
       lastError = error
+      if (isUsageWindowStop(error)) throw new CannotRetryError(error, retryContext)
       logForDebugging(
         `API error (attempt ${attempt}/${maxRetries + 1}): ${error instanceof APIError ? `${error.status} ${error.message}` : errorMessage(error)}`,
         { level: 'error' },
@@ -718,6 +720,7 @@ function handleGcpCredentialError(error: unknown): boolean {
 }
 
 function shouldRetry(error: APIError): boolean {
+  if (isUsageWindowStop(error)) return false
   // Never retry mock errors - they're from /mock-limits command for testing
   if (isMockRateLimitError(error)) {
     return false
