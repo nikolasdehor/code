@@ -193,7 +193,7 @@ type Props = {
 };
 
 // Bottom slot has maxHeight="50%"; reserve lines for footer, border, status.
-const PROMPT_FOOTER_LINES = 5;
+const PROMPT_FOOTER_LINES = 6;
 const MIN_INPUT_VIEWPORT_LINES = 3;
 function PromptInput({
   debug,

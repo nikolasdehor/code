@@ -32,6 +32,36 @@ for (const fullscreen of [false, true]) test(`routing header appears once with t
   } finally { await cli.stop() }
 })
 
+test('interactive /goal shows, retries, and clears the active objective', { timeout: 60_000 }, async () => {
+  const objective = 'Explain where slash commands are registered'
+  const cli = await startCli({ columns: 120, rows: 40, slashCommands: true, routerOptions: { routedCompletion: true } })
+  try {
+    await cli.waitFor(() => cli.screen().includes('❯'))
+    cli.write(`/goal ${objective}`)
+    await cli.waitFor(() => cli.screen().includes(`│ ❯ /goal ${objective}`))
+    cli.write('\r')
+    await cli.waitFor(() => cli.screen().includes(`Goal active: ${objective}`))
+    await cli.waitFor(() => cli.screen().includes('E2E_ROUTED_COMPLETE fixture-1'))
+    assert.equal(cli.router.requests.length, 1)
+
+    const goalRequestIndex = () => cli.router.requests.findIndex(request =>
+      (JSON.stringify(request.messages).match(/<command-name>\/goal<\/command-name>/g) || []).length >= 2,
+    )
+    cli.write(`/goal ${objective}`)
+    await cli.waitFor(() => cli.screen().includes(`│ ❯ /goal ${objective}`))
+    cli.write('\r')
+    await cli.waitFor(() => cli.screen().includes('Goal already active; continuing:'))
+    await cli.waitFor(() => goalRequestIndex() >= 0)
+    await cli.waitFor(() => cli.screen().includes(`E2E_ROUTED_COMPLETE fixture-${goalRequestIndex() + 1}`))
+
+    cli.write('/goal clear')
+    await cli.waitFor(() => cli.screen().includes('│ ❯ /goal clear'))
+    cli.write('\r')
+    await cli.waitFor(() => cli.screen().includes('Goal cleared:') && !cli.screen().includes(`Goal active: ${objective}`))
+    assert.deepEqual(cli.router.unexpected, [])
+  } finally { await cli.stop() }
+})
+
 for (const fullscreen of [false, true]) for (const [columns, rows] of [[40, 12], [80, 24], [120, 40]]) for (const agents of [1, 2, 8, 20]) {
   test(`installed CLI: ${agents} agents, ${columns}x${rows}, fullscreen=${fullscreen}`, { timeout: 60_000 }, async () => {
     const cli = await startCli({ columns, rows, fullscreen, routerOptions: { agents }, args: ['E2E_PARENT: delegate to the fixture agents.'] })

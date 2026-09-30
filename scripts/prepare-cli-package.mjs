@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve, join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { parseNpmPackJson } from './npm-pack-json.mjs'
 
 // Build once before this script. Neither packing nor installing may rebuild it.
 const output = resolve('.artifacts/package')
@@ -28,7 +29,7 @@ function npm(args, cwd) {
   return result.stdout
 }
 if (!process.argv.includes('--install-only') && !process.argv.includes('--verify-only')) {
-  const [pack] = JSON.parse(npm(['pack', '--ignore-scripts', '--json', '--pack-destination', output]))
+  const pack = parseNpmPackJson(npm(['pack', '--ignore-scripts', '--json', '--pack-destination', output]))
   writeFileSync(join(output, 'sha256.txt'), `${createHash('sha256').update(readFileSync(join(output, pack.filename))).digest('hex')}  ${pack.filename}\n`)
   writeFileSync(join(output, 'package-info.json'), JSON.stringify({ tarball: pack.filename, files: pack.files.map(file => file.path) }, null, 2))
 }

@@ -35,6 +35,7 @@ import {
   isTodoV2Enabled,
 } from './tasks.js'
 import { getPlanFilePath, getPlan } from './plans.js'
+import { formatGoalReminder, getSessionGoal } from './goals.js'
 import { getConnectedIdeName } from './ide.js'
 import {
   filterInjectedMemoryFiles,
@@ -741,6 +742,22 @@ export type TeamContextAttachment = {
  * This is janky
  * TODO: Generate attachments when we create messages
  */
+function getSessionGoalAttachments(
+  toolUseContext: ToolUseContext,
+): Attachment[] {
+  // The persistent goal belongs to the main session. Agents receive scoped
+  // task prompts from the coordinator and must not change the session goal.
+  if (toolUseContext.agentId) return []
+  const goal = getSessionGoal()
+  if (!goal || goal.status === 'paused' || goal.status === 'complete') return []
+  return [
+    {
+      type: 'critical_system_reminder',
+      content: formatGoalReminder(goal),
+    },
+  ]
+}
+
 export async function getAttachments(
   input: string | null,
   toolUseContext: ToolUseContext,
@@ -758,7 +775,10 @@ export async function getAttachments(
     // getAttachmentMessages runs — returning [] here silently drops them.
     // Coworker runs with --bare and depends on task-notification for
     // mid-tool-call notifications from Local*Task/Remote*Task.
-    return getQueuedCommandAttachments(queuedCommands)
+    return [
+      ...(await getQueuedCommandAttachments(queuedCommands)),
+      ...getSessionGoalAttachments(toolUseContext),
+    ]
   }
 
   // This will slow down submissions
@@ -881,6 +901,7 @@ export async function getAttachments(
     // replaces it; see src/services/skillSearch/prefetch.ts.
     maybe('plan_mode', () => getPlanModeAttachments(messages, toolUseContext)),
     maybe('plan_mode_exit', () => getPlanModeExitAttachment(toolUseContext)),
+    maybe('session_goal', async () => getSessionGoalAttachments(toolUseContext)),
     ...(feature('TRANSCRIPT_CLASSIFIER')
       ? [
           maybe('auto_mode', () =>

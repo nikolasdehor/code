@@ -37,7 +37,7 @@ export async function createFakeRouter({ agents = 2, omitUsage = false, zeroUsag
     emit({ role: 'assistant' })
     if (routedCompletion && body.tools?.length) {
       emit({ reasoning_content: 'Synthetic hidden reasoning.' })
-      emit({ content: 'Oi! E2E_ROUTED_COMPLETE' })
+      emit({ content: `Oi! E2E_ROUTED_COMPLETE ${id}` })
       emit({}, 'stop', { prompt_tokens: 10, completion_tokens: 4 })
     } else if (isChild && childToolLoop) {
       emit({ tool_calls: [{ index: 0, id: `read-${sequence}`, type: 'function', function: { name: 'Read', arguments: JSON.stringify({ file_path: 'README.md' }) } }] })
