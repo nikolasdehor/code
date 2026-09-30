@@ -42,6 +42,7 @@ verboo /login
 ## What Works
 
 - **Tool-driven coding workflows**: Bash, file read/write/edit, grep, glob, agents, tasks, MCP, and slash commands
+- **Persistent session goals**: `/goal <objective>` keeps a goal active across turns; use `/goal status`, `/goal pause`, `/goal resume`, `/goal clear`, and `/goal complete` to manage it. A new `/goal <objective>` replaces the current goal.
 - **Streaming responses**: Real-time token output and tool progress
 - **Tool calling**: Multi-step tool loops with model calls, tool execution, and follow-up responses
 - **Images**: URL and base64 image inputs for providers that support vision

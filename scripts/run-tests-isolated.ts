@@ -83,7 +83,9 @@ export async function main(): Promise<void> {
       process.stdout.write(`[${results.length}/${files.length}] ${result.exitCode ? 'FAIL' : 'PASS'} ${file}\n`)
     }
   }
-  await Promise.all(Array.from({ length: Math.min(files.length, positiveInteger(process.env.TEST_ISOLATION_CONCURRENCY, 4)) }, worker))
+  // Each suite launches a full Bun process. Running four UI-heavy suites at
+  // once starves their short terminal/render deadlines on CI-sized machines.
+  await Promise.all(Array.from({ length: Math.min(files.length, positiveInteger(process.env.TEST_ISOLATION_CONCURRENCY, 1)) }, worker))
   const failures = results.filter(r => r.exitCode !== 0)
   const reportDir = process.env.TEST_REPORT_DIR || '.artifacts/test-results'
   await mkdir(reportDir, { recursive: true })

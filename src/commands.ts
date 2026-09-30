@@ -27,6 +27,7 @@ import onboardGithub from './commands/onboard-github/index.js'
 import knowledge from './commands/knowledge/index.js'
 import memory from './commands/memory/index.js'
 import help from './commands/help/index.js'
+import goal from './commands/goal/index.js'
 import ide from './commands/ide/index.js'
 import init from './commands/init.js'
 import initVerifiers from './commands/init-verifiers.js'
@@ -305,6 +306,7 @@ const COMMANDS = memoize((): Command[] => [
   files,
   heapDump,
   help,
+  goal,
   ide,
   init,
   keybindings,
