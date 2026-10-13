@@ -249,6 +249,50 @@ describe('Codex provider config', () => {
 })
 
 describe('Codex request translation', () => {
+  test('strips unsupported object property-count constraints from MCP schemas', () => {
+    const tools = convertToolsToResponsesTools([
+      {
+        name: 'mcp__composio__COMPOSIO_MANAGE_SKILL',
+        description: 'Manage a skill',
+        input_schema: {
+          type: 'object',
+          minProperties: 1,
+          maxProperties: 8,
+          allOf: [{ required: ['config'] }],
+          not: { required: ['unsupported'] },
+          dependentRequired: { config: ['name'] },
+          dependentSchemas: { config: { required: ['name'] } },
+          properties: {
+            config: {
+              type: 'object',
+              minProperties: 1,
+              maxProperties: 4,
+              properties: {
+                name: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+    ])
+
+    expect(tools[0].parameters).toEqual({
+      type: 'object',
+      properties: {
+        config: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+          },
+          additionalProperties: false,
+          required: ['name'],
+        },
+      },
+      additionalProperties: false,
+      required: ['config'],
+    })
+  })
+
   test('normalizes optional parameters into strict Responses schemas', () => {
     const tools = convertToolsToResponsesTools([
       {
