@@ -103,6 +103,10 @@ import { handleStopHooks } from './query/stopHooks.js'
 import { buildQueryConfig } from './query/config.js'
 import { getGlobalConfig } from './utils/config.js'
 import { productionDeps, type QueryDeps } from './query/deps.js'
+import {
+  getEmptyModelResponseDisposition,
+  MAX_EMPTY_MODEL_RESPONSE_RETRIES,
+} from './query/emptyResponse.js'
 import type { Terminal, Continue } from './query/transitions.js'
 import { feature } from 'bun:bundle'
 import {
@@ -349,6 +353,7 @@ async function* queryLoop(
   // trigger point. Loop-local (not on State) to avoid touching the 7 continue
   // sites.
   let taskBudgetRemaining: number | undefined = undefined
+  let emptyModelResponseRetryCount = 0
 
   // Snapshot immutable env/statsig/session state once at entry. See QueryConfig
   // for what's included and why feature() gates are intentionally excluded.
@@ -1055,6 +1060,36 @@ async function* queryLoop(
             }
           }
           queryCheckpoint('query_api_streaming_end')
+
+          const emptyResponseDisposition = getEmptyModelResponseDisposition({
+            assistantMessageCount: assistantMessages.length,
+            retryCount: emptyModelResponseRetryCount,
+            aborted: toolUseContext.abortController.signal.aborted,
+          })
+          if (emptyResponseDisposition === 'retry') {
+            emptyModelResponseRetryCount++
+            logForDebugging(
+              JSON.stringify({
+                type: 'empty_model_response_retry',
+                model: currentModel,
+                querySource,
+                turnCount,
+                retryCount: emptyModelResponseRetryCount,
+                maxRetries: MAX_EMPTY_MODEL_RESPONSE_RETRIES,
+              }),
+              { level: 'warn' },
+            )
+            attemptWithFallback = true
+            continue
+          }
+          if (emptyResponseDisposition === 'error') {
+            throw new Error(
+              `The model returned no assistant response after ${emptyModelResponseRetryCount + 1} attempts. Please retry the request.`,
+            )
+          }
+          if (assistantMessages.length > 0) {
+            emptyModelResponseRetryCount = 0
+          }
 
           // Yield deferred microcompact boundary message using actual API-reported
           // token deletion count instead of client-side estimates.
