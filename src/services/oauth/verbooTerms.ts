@@ -24,6 +24,8 @@ export type VerbooTermsStatus = {
   acceptedAt?: string
   mustAccept: boolean
   pendingReacceptance: boolean
+  requiresAcceptanceForContract: boolean
+  renewalAcceptanceRequired: boolean
   acceptUrl?: string
 }
 

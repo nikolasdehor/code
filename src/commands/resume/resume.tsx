@@ -11,13 +11,14 @@ import { Spinner } from '../../components/Spinner.js';
 import { useIsInsideModal } from '../../context/modalContext.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { setClipboard } from '../../ink/termio/osc.js';
-import { Box, Text } from '../../ink.js';
+import { Box, Text, useApp } from '../../ink.js';
 import type { LocalJSXCommandCall } from '../../types/command.js';
 import type { LogOption } from '../../types/logs.js';
 import { agenticSessionSearch } from '../../utils/agenticSessionSearch.js';
 import { checkCrossProjectResume } from '../../utils/crossProjectResume.js';
 import { getWorktreePaths } from '../../utils/getWorktreePaths.js';
 import { logError } from '../../utils/log.js';
+import { handoffToResume } from '../../utils/resumeHandoff.js';
 import { getLastSessionLog, getSessionIdFromLog, isCustomTitleEnabled, isLiteLog, loadAllProjectsMessageLogs, loadFullLog, loadSameRepoMessageLogs, searchSessionsByCustomTitle } from '../../utils/sessionStorage.js';
 import { validateUuid } from '../../utils/uuid.js';
 type ResumeResult = {
@@ -104,6 +105,7 @@ function ResumeCommand({
     rows
   } = useTerminalSize();
   const insideModal = useIsInsideModal();
+  const app = useApp();
   const loadLogs = React.useCallback(async (allProjects: boolean, paths: string[]) => {
     setLoading(true);
     try {
@@ -153,7 +155,11 @@ function ResumeCommand({
         return;
       }
 
-      // Different project - show command instead of resuming
+      // Restart in the selected project so its permissions and configuration
+      // are loaded before the conversation resumes.
+      const handedOff = await handoffToResume(crossProjectCheck.projectPath, sessionId, () => app.exit());
+      if (handedOff) return;
+
       const raw = await setClipboard(crossProjectCheck.command);
       if (raw) process.stdout.write(raw);
 

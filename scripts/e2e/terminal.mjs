@@ -7,9 +7,12 @@ import { pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
+import { chmod } from 'node:fs/promises'
+import { deflateRawSync } from 'node:zlib'
 import { createFakeRouter } from './fake-router.mjs'
+import { CODEX_FIXTURE_README, createCodexFixtureCredentialRecord, createCodexRouter } from './codex-router.mjs'
 
-export async function startCli({ columns = 80, rows = 24, fullscreen = false, usePty = true, slashCommands = false, model = 'fixture-model', args = [], routerOptions } = {}) {
+export async function startCli({ columns = 80, rows = 24, fullscreen = false, usePty = true, slashCommands = false, model = 'fixture-model', args = [], routerOptions, codexOptions } = {}) {
   const consumer = (await readFile(resolve('.artifacts/package/consumer-path.txt'), 'utf8')).trim()
   const root = resolve('.artifacts/pty')
   await mkdir(root, { recursive: true })
@@ -23,10 +26,23 @@ export async function startCli({ columns = 80, rows = 24, fullscreen = false, us
   }
   const git = spawnSync('git', ['init', '-q', project], { encoding: 'utf8' })
   if (git.status !== 0) throw new Error(git.stderr || 'Could not isolate fixture project')
-  await writeFile(join(project, 'README.md'), 'A deterministic CLI test fixture. No external services or user files.\n')
+  await writeFile(join(project, 'README.md'), `${CODEX_FIXTURE_README}\n`)
   const projectConfigKey = project.replaceAll('\\', '/')
   await writeFile(join(config, '.config.json'), JSON.stringify({ theme: 'dark', hasCompletedOnboarding: true, bypassPermissionsModeAccepted: true, projects: { [projectConfigKey]: { hasTrustDialogAccepted: true } } }))
   const router = await createFakeRouter(routerOptions)
+  const codexRouter = codexOptions ? await createCodexRouter({ projectRoot: project, ...codexOptions }) : undefined
+  let codexFixtureBin
+  if (codexRouter) {
+    if (process.platform !== 'linux') throw new Error('The Codex PTY fixture requires Linux Secret Service; it uses a per-test fake secret-tool executable.')
+    codexFixtureBin = join(dir, 'codex-fixture-bin')
+    await mkdir(codexFixtureBin)
+    const keyringPath = join(dir, 'codex-fixture-keyring.txt')
+    const payload = JSON.stringify(createCodexFixtureCredentialRecord())
+    await writeFile(keyringPath, `verboo-secure-v1:${deflateRawSync(Buffer.from(payload, 'utf8')).toString('base64')}`)
+    const secretToolPath = join(codexFixtureBin, 'secret-tool')
+    await writeFile(secretToolPath, `#!/usr/bin/env node\nimport { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs'\nconst file = process.env.CLI_E2E_CODEX_KEYRING\nconst action = process.argv[2]\nif (action === 'lookup') { if (!existsSync(file)) process.exit(1); process.stdout.write(readFileSync(file, 'utf8')); process.exit(0) }\nif (action === 'store') { const chunks = []; for await (const chunk of process.stdin) chunks.push(chunk); writeFileSync(file, Buffer.concat(chunks)); process.exit(0) }\nif (action === 'clear') { if (existsSync(file)) unlinkSync(file); process.exit(0) }\nprocess.exit(2)\n`)
+    await chmod(secretToolPath, 0o755)
+  }
   await writeFile(join(dir, 'unexpected-network.log'), '')
   // Preserve OS runtime directories required by PowerShell/.NET, while keeping
   // provider credentials and user CLI configuration out of the fixture.
@@ -34,7 +50,7 @@ export async function startCli({ columns = 80, rows = 24, fullscreen = false, us
   const inheritedPath = Object.entries(env).find(([key]) => key.toUpperCase() === 'PATH')?.[1] || ''
   for (const key of Object.keys(env)) if (key.toUpperCase() === 'PATH') delete env[key]
   Object.assign(env, {
-    PATH: `${dirname(process.execPath)}${process.platform === 'win32' ? ';' : ':'}${inheritedPath}`,
+    PATH: [codexFixtureBin, dirname(process.execPath), inheritedPath].filter(Boolean).join(process.platform === 'win32' ? ';' : ':'),
     TERM: 'xterm-256color', LANG: 'en_US.UTF-8', FORCE_COLOR: '1',
     VERBOO_DISABLE_PLUGINS: '1', VERBOO_CONFIG_DIR: config, VERBOO_PROJECTS_DIR: join(dir, 'projects'),
     TMPDIR: join(dir, 'tmp'), TMP: join(dir, 'tmp'), TEMP: join(dir, 'tmp'),
@@ -44,6 +60,13 @@ export async function startCli({ columns = 80, rows = 24, fullscreen = false, us
     CLI_E2E_ORIGIN: router.origin, CLI_E2E_NETWORK_LOG: join(dir, 'unexpected-network.log'),
     CLI_E2E_PROCESS_LOG: join(dir, 'startup-processes.jsonl'),
   })
+  if (codexRouter) {
+    Object.assign(env, {
+      CLI_E2E_CODEX_ORIGIN: codexRouter.origin,
+      CLI_E2E_CODEX_KEYRING: join(dir, 'codex-fixture-keyring.txt'),
+      OPENAI_MODEL: 'gpt-5.5',
+    })
+  }
   const terminal = new xterm.Terminal({ cols: columns, rows, allowProposedApi: true, scrollback: 5000 })
   terminal.loadAddon(new unicode11.Unicode11Addon())
   terminal.unicode.activeVersion = '11'
@@ -73,19 +96,21 @@ export async function startCli({ columns = 80, rows = 24, fullscreen = false, us
         onExit(callback) { processChild.once('close', (exitCode, signal) => callback({ exitCode, signal })) },
       }
     }
-  } catch (error) { terminal.dispose(); await router.close(); throw error }
+  } catch (error) { terminal.dispose(); await router.close(); await codexRouter?.close(); throw error }
   let raw = ''
+  const chunks = []
   let exited
   const frames = []
   const screen = () => Array.from({ length: terminal.rows }, (_, y) => terminal.buffer.active.getLine(terminal.buffer.active.viewportY + y)?.translateToString(true) || '').join('\n')
   terminal.onData(data => { if (!exited) child.write(data) })
   child.onData(data => {
     raw += data
+    chunks.push({ at: Date.now(), text: data })
     terminal.write(data, () => frames.push({ at: Date.now(), columns: terminal.cols, rows: terminal.rows, cursorX: terminal.buffer.active.cursorX, cursorY: terminal.buffer.active.cursorY, text: screen() }))
   })
   const exit = new Promise(resolve => child.onExit(value => { exited = value; resolve(value) }))
   return {
-    dir, router, frames, screen, get raw() { return raw }, get exited() { return exited }, exit,
+    dir, router, codexRouter, frames, chunks, screen, get raw() { return raw }, get exited() { return exited }, exit,
     write(data) { child.write(data) },
     resize(cols, rows) { terminal.resize(cols, rows); child.resize(cols, rows) },
     async waitFor(predicate, timeout = 20_000) {
@@ -102,14 +127,17 @@ export async function startCli({ columns = 80, rows = 24, fullscreen = false, us
       if (!exited) await Promise.race([exit, delay(3000, undefined, { ref: false })])
       await delay(25)
       await writeFile(join(dir, 'terminal.ansi'), raw)
+      await writeFile(join(dir, 'terminal-chunks.json'), JSON.stringify(chunks, null, 2))
       await writeFile(join(dir, 'stderr.log'), stderr)
       await writeFile(join(dir, 'frames.json'), JSON.stringify(frames, null, 2))
       await writeFile(join(dir, 'requests.json'), JSON.stringify(router.requests, null, 2))
+      if (codexRouter) await writeFile(join(dir, 'codex-requests.json'), JSON.stringify(codexRouter.requests, null, 2))
       await writeFile(join(dir, 'screen.txt'), screen())
       terminal.dispose()
       await router.close()
+      await codexRouter?.close()
       const unexpected = await readFile(join(dir, 'unexpected-network.log'), 'utf8')
-      if (unexpected || router.unexpected.length) throw new Error(`Unexpected network traffic; artifacts: ${dir}\n${unexpected}${router.unexpected.join('\n')}`)
+      if (unexpected || router.unexpected.length || codexRouter?.violations.length) throw new Error(`Unexpected network traffic or invalid Codex protocol; artifacts: ${dir}\n${unexpected}${router.unexpected.join('\n')}${codexRouter?.violations.join('\n') ?? ''}`)
     },
   }
 }

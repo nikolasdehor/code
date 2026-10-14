@@ -56,6 +56,8 @@ type ResponsesInputPart =
   | { type: 'input_text'; text: string }
   | { type: 'output_text'; text: string }
   | { type: 'input_image'; image_url: string }
+  | { type: 'input_file'; file_data: string; filename: string }
+  | { type: 'input_file'; file_url: string }
 
 type ResponsesInputItem =
   | {
@@ -73,7 +75,7 @@ type ResponsesInputItem =
   | {
       type: 'function_call_output'
       call_id: string
-      output: string
+      output: string | ResponsesInputPart[]
     }
 
 type ResponsesTool = {
@@ -317,30 +319,57 @@ export function convertSystemPrompt(system: unknown): string {
   return String(system)
 }
 
-function convertToolResultToText(content: unknown): string {
+function convertToolResultContent(
+  content: unknown,
+): string | ResponsesInputPart[] {
   if (typeof content === 'string') return content
   if (!Array.isArray(content)) return JSON.stringify(content ?? '')
 
   const chunks: string[] = []
+  const parts: ResponsesInputPart[] = []
   for (const block of content) {
     if (block?.type === 'text' && typeof block.text === 'string') {
       chunks.push(block.text)
+      parts.push({ type: 'input_text', text: block.text })
       continue
     }
 
     if (block?.type === 'image') {
       const src = block.source
-      if (src?.type === 'url' && src.url) {
-        chunks.push(`[Image](${src.url})`)
+      if (src?.type === 'url' && typeof src.url === 'string' && src.url) {
+        parts.push({ type: 'input_image', image_url: src.url })
+      } else if (
+        src?.type === 'base64' &&
+        typeof src.media_type === 'string' &&
+        typeof src.data === 'string'
+      ) {
+        parts.push({
+          type: 'input_image',
+          image_url: `data:${src.media_type};base64,${src.data}`,
+        })
       }
+      continue
+    }
+
+    if (block?.type === 'document') {
+      const documentPart = convertDocumentBlockToResponsesPart(block)
+      if (documentPart) parts.push(documentPart)
       continue
     }
 
     if (typeof block?.text === 'string') {
       chunks.push(block.text)
+      parts.push({ type: 'input_text', text: block.text })
     }
   }
 
+  if (
+    parts.some(
+      part => part.type === 'input_image' || part.type === 'input_file',
+    )
+  ) {
+    return parts
+  }
   return chunks.join('\n')
 }
 
@@ -378,6 +407,12 @@ function convertContentBlocksToResponsesParts(
         }
         break
       }
+      case 'document': {
+        if (role === 'assistant') break
+        const documentPart = convertDocumentBlockToResponsesPart(block)
+        if (documentPart) parts.push(documentPart)
+        break
+      }
       case 'thinking':
         if (block.thinking) {
           parts.push({
@@ -399,10 +434,43 @@ function convertContentBlocksToResponsesParts(
   return parts
 }
 
+function convertDocumentBlockToResponsesPart(
+  block: Record<string, any>,
+): ResponsesInputPart | undefined {
+  const source = block.source
+  if (source?.type === 'base64' && typeof source.data === 'string') {
+    const mediaType =
+      typeof source.media_type === 'string' ? source.media_type : ''
+    const title =
+      typeof block.title === 'string' && block.title.trim()
+        ? block.title.trim()
+        : undefined
+    return {
+      type: 'input_file',
+      filename:
+        title ?? (mediaType === 'application/pdf' ? 'document.pdf' : 'document'),
+      file_data: source.data,
+    }
+  }
+  if (source?.type === 'url' && typeof source.url === 'string' && source.url) {
+    return { type: 'input_file', file_url: source.url }
+  }
+  if (source?.type === 'text' && typeof source.data === 'string') {
+    return { type: 'input_text', text: source.data }
+  }
+  return undefined
+}
+
 export function convertAnthropicMessagesToResponsesInput(
   messages: Array<{ role?: string; message?: { role?: string; content?: unknown }; content?: unknown }>,
 ): ResponsesInputItem[] {
   const items: ResponsesInputItem[] = []
+  const appendMessage = (
+    role: 'user' | 'assistant',
+    parts: ResponsesInputPart[],
+  ): void => {
+    if (parts.length > 0) items.push({ type: 'message', role, content: parts })
+  }
 
   for (const message of messages) {
     const inner = message.message ?? message
@@ -411,81 +479,84 @@ export function convertAnthropicMessagesToResponsesInput(
 
     if (role === 'user') {
       if (Array.isArray(content)) {
-        const toolResults = content.filter(
-          (block: { type?: string }) => block.type === 'tool_result',
-        )
-        const otherContent = content.filter(
-          (block: { type?: string }) => block.type !== 'tool_result',
-        )
-
-        for (const toolResult of toolResults) {
-          const { callId } = normalizeToolUseId(toolResult.tool_use_id)
-          items.push({
-            type: 'function_call_output',
-            call_id: callId,
-            output: (() => {
-              const out = convertToolResultToText(toolResult.content)
-              return toolResult.is_error ? `Error: ${out}` : out
-            })(),
-          })
+        let pendingParts: ResponsesInputPart[] = []
+        const flushPendingParts = (): void => {
+          appendMessage('user', pendingParts)
+          pendingParts = []
         }
 
-        const parts = convertContentBlocksToResponsesParts(otherContent, 'user')
-        if (parts.length > 0) {
-          items.push({
-            type: 'message',
-            role: 'user',
-            content: parts,
-          })
+        for (const block of content) {
+          if (block?.type === 'tool_result') {
+            flushPendingParts()
+            const { callId } = normalizeToolUseId(block.tool_use_id)
+            const output = convertToolResultContent(block.content)
+            items.push({
+              type: 'function_call_output',
+              call_id: callId,
+              output: block.is_error
+                ? Array.isArray(output)
+                  ? [{ type: 'input_text', text: 'Error:' }, ...output]
+                  : `Error: ${output}`
+                : output,
+            })
+            continue
+          }
+
+          pendingParts.push(
+            ...convertContentBlocksToResponsesParts([block], 'user'),
+          )
         }
+        flushPendingParts()
         continue
       }
 
-      items.push({
-        type: 'message',
-        role: 'user',
-        content: convertContentBlocksToResponsesParts(content, 'user'),
-      })
+      appendMessage('user', convertContentBlocksToResponsesParts(content, 'user'))
       continue
     }
 
     if (role === 'assistant') {
-      const textBlocks = Array.isArray(content)
-        ? content.filter((block: { type?: string }) =>
-            block.type !== 'tool_use' && block.type !== 'thinking')
-        : content
-      const parts = convertContentBlocksToResponsesParts(textBlocks, 'assistant')
-      if (parts.length > 0) {
-        items.push({
-          type: 'message',
-          role: 'assistant',
-          content: parts,
-        })
+      if (Array.isArray(content)) {
+        let pendingParts: ResponsesInputPart[] = []
+        const flushPendingParts = (): void => {
+          appendMessage('assistant', pendingParts)
+          pendingParts = []
+        }
+
+        for (const block of content) {
+          if (block?.type === 'tool_use') {
+            flushPendingParts()
+            const normalized = normalizeToolUseId(block.id)
+            items.push({
+              type: 'function_call',
+              id: normalized.id,
+              call_id: normalized.callId,
+              name: block.name ?? 'tool',
+              arguments:
+                typeof block.input === 'string'
+                  ? block.input
+                  : JSON.stringify(block.input ?? {}),
+            })
+            continue
+          }
+
+          // Thinking blocks were deliberately omitted from Codex history.
+          if (block?.type === 'thinking') continue
+          pendingParts.push(
+            ...convertContentBlocksToResponsesParts([block], 'assistant'),
+          )
+        }
+        flushPendingParts()
+        continue
       }
 
-      if (Array.isArray(content)) {
-        for (const toolUse of content.filter(
-          (block: { type?: string }) => block.type === 'tool_use',
-        )) {
-          const normalized = normalizeToolUseId(toolUse.id)
-          items.push({
-            type: 'function_call',
-            id: normalized.id,
-            call_id: normalized.callId,
-            name: toolUse.name ?? 'tool',
-            arguments:
-              typeof toolUse.input === 'string'
-                ? toolUse.input
-                : JSON.stringify(toolUse.input ?? {}),
-          })
-        }
-      }
+      appendMessage(
+        'assistant',
+        convertContentBlocksToResponsesParts(content, 'assistant'),
+      )
     }
   }
 
-  return items.filter(item =>
-    item.type !== 'message' || item.content.length > 0,
-  )
+  return items
 }
 
 /**
@@ -713,6 +784,53 @@ function convertToolChoice(toolChoice: unknown): unknown {
   return undefined
 }
 
+function convertOutputConfigToResponsesText(
+  outputConfig: unknown,
+): Record<string, unknown> | undefined {
+  if (!outputConfig || typeof outputConfig !== 'object' || Array.isArray(outputConfig)) {
+    return undefined
+  }
+  const format = (outputConfig as Record<string, unknown>).format
+  if (!format || typeof format !== 'object' || Array.isArray(format)) {
+    return undefined
+  }
+  const formatRecord = format as Record<string, unknown>
+
+  if (formatRecord.type === 'json_object') {
+    return { format: { type: 'json_object' } }
+  }
+
+  if (
+    formatRecord.type !== 'json_schema' ||
+    !formatRecord.schema ||
+    typeof formatRecord.schema !== 'object' ||
+    Array.isArray(formatRecord.schema)
+  ) {
+    return undefined
+  }
+
+  const name =
+    typeof formatRecord.name === 'string' && formatRecord.name.trim()
+      ? formatRecord.name.trim()
+      : 'structured_output'
+  const strict =
+    typeof formatRecord.strict === 'boolean' ? formatRecord.strict : true
+
+  return {
+    format: {
+      type: 'json_schema',
+      name,
+      strict,
+      schema: strict
+        ? enforceStrictSchema(formatRecord.schema)
+        : sanitizeSchemaForOpenAICompat(formatRecord.schema),
+      ...(typeof formatRecord.description === 'string'
+        ? { description: formatRecord.description }
+        : {}),
+    },
+  }
+}
+
 export async function performCodexRequest(options: {
   request: ResolvedProviderRequest
   credentials: ResolvedCodexCredentials
@@ -744,10 +862,18 @@ export async function performCodexRequest(options: {
     stream: true,
   }
 
+  const maxOutputTokens = options.params.max_tokens
+  if (Number.isSafeInteger(maxOutputTokens) && maxOutputTokens > 0) {
+    body.max_output_tokens = maxOutputTokens
+  }
+
   const instructions = convertSystemPrompt(options.params.system)
   if (instructions) {
     body.instructions = instructions
   }
+
+  const text = convertOutputConfigToResponsesText(options.params.output_config)
+  if (text) body.text = text
 
   const toolChoice = convertToolChoice(options.params.tool_choice)
   if (toolChoice) {

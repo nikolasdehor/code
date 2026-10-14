@@ -40,7 +40,7 @@ export async function call(
     return null
   }
 
-  if (!status.mustAccept && !status.pendingReacceptance) {
+  if (!status.mustAccept && !status.pendingReacceptance && !status.requiresAcceptanceForContract) {
     onDone(
       `Termos de Uso versão ${status.current.version} aceitos${
         status.acceptedAt ? ` em ${new Date(status.acceptedAt).toLocaleString('pt-BR')}` : ''
@@ -66,7 +66,7 @@ export async function call(
         onDone(
           status.mustAccept
             ? 'Termos não aceitos. O acesso ao produto permanece bloqueado.'
-            : `Termos não aceitos agora.${deadline ? ` O bloqueio começa em ${deadline}.` : ''}`,
+            : `Termos não aceitos agora.${deadline ? ` As renovações da assinatura dependem do aceite após ${deadline}.` : ''} O período já pago permanece ativo até o vencimento.`,
           { display: 'system' },
         )
       }}

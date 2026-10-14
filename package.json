@@ -1,6 +1,6 @@
 {
   "name": "@verboo/code",
-  "version": "0.15.37",
+  "version": "0.15.38",
   "description": "Verboo Code — coding agent for the Verboo platform",
   "type": "module",
   "bin": {
@@ -75,7 +75,7 @@
     "hardening:strict": "bun run typecheck && bun run hardening:check",
     "prepack": "npm run build",
     "test:quality": "bun scripts/check-cli-quality.ts",
-    "test:pty": "node --test --test-concurrency=1 scripts/e2e/cli.e2e.mjs",
+    "test:pty": "node --test --test-concurrency=1 scripts/e2e/cli.e2e.mjs scripts/e2e/codex-cli.e2e.mjs scripts/e2e/resume-handoff.e2e.mjs",
     "typecheck:agents": "tsc --project tsconfig.agent-contracts.json"
   },
   "dependencies": {

@@ -43,6 +43,7 @@ import { isEnvTruthy } from './envUtils.js'
 import { getCurrentSessionTitle, sessionIdExists } from './sessionStorage.js'
 import { sleep } from './sleep.js'
 import { profileReport } from './startupProfiler.js'
+import { finishResumeHandoffAfterCleanup } from './resumeHandoff.js'
 
 /**
  * Clean up terminal modes synchronously before process exit.
@@ -155,7 +156,8 @@ function printResumeHint(): void {
   if (
     process.stdout.isTTY &&
     getIsInteractive() &&
-    !isSessionPersistenceDisabled()
+    !isSessionPersistenceDisabled() &&
+    process.env.VERBOO_RESUME_HANDOFF !== '1'
   ) {
     try {
       const sessionId = getSessionId()
@@ -532,6 +534,14 @@ export async function gracefulShutdown(
     } catch {
       // stderr may be closed (e.g., SSH disconnect). Ignore write errors.
     }
+  }
+
+  if (finishResumeHandoffAfterCleanup(exitCode, forceExit)) {
+    if (failsafeTimer !== undefined) {
+      clearTimeout(failsafeTimer)
+      failsafeTimer = undefined
+    }
+    return
   }
 
   forceExit(exitCode)
