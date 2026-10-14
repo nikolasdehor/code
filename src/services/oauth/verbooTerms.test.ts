@@ -33,6 +33,8 @@ const requiredStatus: VerbooTermsStatus = {
   },
   mustAccept: true,
   pendingReacceptance: false,
+  requiresAcceptanceForContract: true,
+  renewalAcceptanceRequired: false,
   acceptUrl: 'https://code.verboo.ai/pt/terms/accept?version=3',
 }
 

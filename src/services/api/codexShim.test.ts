@@ -10,6 +10,7 @@ import {
   convertCodexResponseToAnthropicMessage,
   convertSystemPrompt,
   convertToolsToResponsesTools,
+  performCodexRequest,
   type AnthropicStreamEvent,
 } from './codexShim.js'
 import { __test as webSearchToolTest } from '../../tools/WebSearchTool/WebSearchTool.js'
@@ -712,6 +713,193 @@ describe('Codex request translation', () => {
         output: 'done',
       },
     ])
+  })
+
+  test('preserves text, tool, and tool-result order including images returned by tools', () => {
+    const items = convertAnthropicMessagesToResponsesInput([
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Before the call.' },
+          { type: 'tool_use', id: 'call_123', name: 'inspect', input: {} },
+          { type: 'text', text: 'After the call.' },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Tool result follows.' },
+          {
+            type: 'tool_result',
+            tool_use_id: 'call_123',
+            content: [
+              { type: 'text', text: 'Screenshot captured.' },
+              {
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: 'image/png',
+                  data: 'cG5n',
+                },
+              },
+              {
+                type: 'document',
+                source: {
+                  type: 'base64',
+                  media_type: 'application/pdf',
+                  data: 'JVBERi0xLjQK',
+                },
+              },
+            ],
+          },
+          { type: 'text', text: 'Continue from this result.' },
+        ],
+      },
+    ])
+
+    expect(items).toEqual([
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Before the call.' }],
+      },
+      {
+        type: 'function_call',
+        id: 'fc_123',
+        call_id: 'call_123',
+        name: 'inspect',
+        arguments: '{}',
+      },
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'After the call.' }],
+      },
+      {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'Tool result follows.' }],
+      },
+      {
+        type: 'function_call_output',
+        call_id: 'call_123',
+        output: [
+          { type: 'input_text', text: 'Screenshot captured.' },
+          { type: 'input_image', image_url: 'data:image/png;base64,cG5n' },
+          {
+            type: 'input_file',
+            filename: 'document.pdf',
+            file_data: 'JVBERi0xLjQK',
+          },
+        ],
+      },
+      {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'Continue from this result.' }],
+      },
+    ])
+  })
+
+  test('forwards PDF document blocks from FileReadTool as Responses input files', () => {
+    const items = convertAnthropicMessagesToResponsesInput([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'document',
+            source: {
+              type: 'base64',
+              media_type: 'application/pdf',
+              data: 'JVBERi0xLjQK',
+            },
+          },
+        ],
+      },
+    ])
+
+    expect(items).toEqual([
+      {
+        type: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'input_file',
+            filename: 'document.pdf',
+            file_data: 'JVBERi0xLjQK',
+          },
+        ],
+      },
+    ])
+  })
+
+  test('sends the output token limit and structured output format to Codex', async () => {
+    const originalFetch = globalThis.fetch
+    let requestUrl = ''
+    let requestHeaders: Headers | undefined
+    let requestBody: Record<string, unknown> | undefined
+
+    globalThis.fetch = (async (input, init) => {
+      requestUrl = String(input)
+      requestHeaders = new Headers(init?.headers)
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+      return new Response(null, { status: 200 })
+    }) as typeof fetch
+
+    try {
+      await performCodexRequest({
+        request: {
+          transport: 'codex_responses',
+          requestedModel: 'gpt-5.5',
+          resolvedModel: 'gpt-5.5',
+          baseUrl: 'https://chatgpt.com/backend-api/codex',
+        },
+        credentials: {
+          apiKey: 'test-token',
+          accountId: 'test-account',
+          source: 'secure-storage',
+        },
+        params: {
+          model: 'gpt-5.5',
+          messages: [{ role: 'user', content: 'Return the requested JSON.' }],
+          max_tokens: 321,
+          stream: true,
+          output_config: {
+            format: {
+              type: 'json_schema',
+              name: 'result',
+              schema: {
+                type: 'object',
+                properties: { ok: { type: 'boolean' } },
+                required: ['ok'],
+                additionalProperties: true,
+              },
+            },
+          },
+        },
+        defaultHeaders: {},
+      })
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+
+    expect(requestUrl).toBe('https://chatgpt.com/backend-api/codex/responses')
+    expect(requestHeaders?.get('authorization')).toBe('Bearer test-token')
+    expect(requestHeaders?.get('chatgpt-account-id')).toBe('test-account')
+    expect(requestBody?.max_output_tokens).toBe(321)
+    expect(requestBody?.text).toEqual({
+      format: {
+        type: 'json_schema',
+        name: 'result',
+        strict: true,
+        schema: {
+          type: 'object',
+          properties: { ok: { type: 'boolean' } },
+          required: ['ok'],
+          additionalProperties: false,
+        },
+      },
+    })
   })
 
   test('preserves call IDs for parallel Codex tool uses and results', () => {

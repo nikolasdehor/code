@@ -1,13 +1,13 @@
 import { createServer } from 'node:http'
 import { setTimeout as delay } from 'node:timers/promises'
 
-export async function createFakeRouter({ agents = 2, omitUsage = false, zeroUsage = false, partialUsage = false, stall = false, background = false, childFailure = false, childToolLoop = false, routedCompletion = false } = {}) {
+export async function createFakeRouter({ agents = 2, omitUsage = false, zeroUsage = false, partialUsage = false, stall = false, background = false, childFailure = false, childToolLoop = false, routedCompletion = false, model: configuredModel } = {}) {
   const requests = []
   const unexpected = []
   let sequence = 0
   const activeAgents = new Set()
   const activeRequests = new Set()
-  const model = routedCompletion ? 'jev-router' : 'fixture-model'
+  const model = routedCompletion ? 'jev-router' : configuredModel ?? 'fixture-model'
   async function handleRequest(req, res) {
     const path = new URL(req.url, 'http://fixture').pathname
     const json = value => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(value)) }

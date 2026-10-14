@@ -344,9 +344,11 @@ async function ensureVerbooTermsAccepted(accessToken: string): Promise<void> {
 
   if (status.pendingReacceptance) {
     const deadline = formatTermsDeadline(status.current.enforcementAt)
+    const renewalNotice = status.renewalAcceptanceRequired
+      ? ' O prazo passou: novas renovações dependem do aceite, e seu período já pago continua até o vencimento.'
+      : `${deadline ? ` Aceite até ${deadline} (horário de Fortaleza) para manter as renovações da assinatura.` : ''} Novas contratações exigem aceite prévio.`
     process.stderr.write(
-      `\n⚠ Os Termos de Uso versão ${status.current.version} foram atualizados.` +
-        `${deadline ? ` O aceite será obrigatório em ${deadline} (horário de Fortaleza).` : ''}` +
+      `\n⚠ Os Termos de Uso versão ${status.current.version} foram atualizados.${renewalNotice}` +
         `\nLeia em ${getPublicTermsURL(status)} e execute /terms para aceitar.\n\n`,
     )
   }

@@ -9,7 +9,7 @@ import { LogSelector } from '../components/LogSelector.js';
 import { Spinner } from '../components/Spinner.js';
 import { restoreCostStateForSession } from '../cost-tracker.js';
 import { setClipboard } from '../ink/termio/osc.js';
-import { Box, Text } from '../ink.js';
+import { Box, Text, useApp } from '../ink.js';
 import { useKeybinding } from '../keybindings/useKeybinding.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../services/analytics/index.js';
 import type { MCPServerConnection, ScopedMcpServerConfig } from '../services/mcp/types.js';
@@ -28,9 +28,10 @@ import { checkCrossProjectResume } from '../utils/crossProjectResume.js';
 import { errorMessage } from '../utils/errors.js';
 import type { FileHistorySnapshot } from '../utils/fileHistory.js';
 import { logError } from '../utils/log.js';
+import { handoffToResume } from '../utils/resumeHandoff.js';
 import { createSystemMessage } from '../utils/messages.js';
 import { computeStandaloneAgentContext, restoreAgentFromSession, restoreWorktreeForResume } from '../utils/sessionRestore.js';
-import { adoptResumedSessionFile, enrichLogs, isCustomTitleEnabled, loadAllProjectsMessageLogsProgressive, loadSameRepoMessageLogsProgressive, recordContentReplacement, resetSessionFilePointer, restoreSessionMetadata, type SessionLogResult } from '../utils/sessionStorage.js';
+import { adoptResumedSessionFile, enrichLogs, getSessionIdFromLog, isCustomTitleEnabled, loadAllProjectsMessageLogsProgressive, loadSameRepoMessageLogsProgressive, recordContentReplacement, resetSessionFilePointer, restoreSessionMetadata, type SessionLogResult } from '../utils/sessionStorage.js';
 import type { ThinkingConfig } from '../utils/thinking.js';
 import type { ContentReplacementRecord } from '../utils/toolResultStorage.js';
 import { REPL } from './REPL.js';
@@ -90,6 +91,7 @@ export function ResumeConversation({
   } = useTerminalSize();
   const agentDefinitions = useAppState(s => s.agentDefinitions);
   const setAppState = useSetAppState();
+  const app = useApp();
   const [logs, setLogs] = React.useState<LogOption[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [resuming, setResuming] = React.useState(false);
@@ -184,6 +186,12 @@ export function ResumeConversation({
     const crossProjectCheck = checkCrossProjectResume(log_0, showAllProjects, worktreePaths);
     if (crossProjectCheck.isCrossProject) {
       if (!crossProjectCheck.isSameRepoWorktree) {
+        const sessionId = getSessionIdFromLog(log_0);
+        if (sessionId) {
+          const handedOff = await handoffToResume(crossProjectCheck.projectPath, sessionId, () => app.exit());
+          if (handedOff) return;
+        }
+
         const raw = await setClipboard(crossProjectCheck.command);
         if (raw) process.stdout.write(raw);
         setCrossProjectCommand(crossProjectCheck.command);

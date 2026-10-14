@@ -3,4 +3,6 @@
 *.md diff=markdown
 *.ts diff=typescript
 *.tsx diff=typescript
+*.mjs diff
 *.json diff=json
+.gitattributes diff

@@ -147,6 +147,7 @@ import { logPluginLoadErrors, logPluginsEnabledForSession } from './utils/teleme
 import { logSkillsLoaded } from './utils/telemetry/skillLoadedEvent.js';
 import { generateTempFilePath } from './utils/tempfile.js';
 import { validateUuid } from './utils/uuid.js';
+import { waitForResumeHandoffReady } from './utils/resumeHandoff.js';
 // Plugin startup checks are now handled non-blockingly in REPL.tsx
 
 import { registerMcpAddCommand } from 'src/commands/mcp/addCommand.js';
@@ -601,6 +602,7 @@ const _pendingSSH: PendingSSH | undefined = feature('SSH_REMOTE') ? {
 } : undefined;
 
 export async function main() {
+  await waitForResumeHandoffReady();
   profileCheckpoint('main_function_start');
 
   // SECURITY: Prevent Windows from executing commands from current directory
